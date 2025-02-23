@@ -6,7 +6,7 @@ async function bootstrap() {
 
   // Enable CORS (customize origins as needed)
   app.enableCors({
-    origin: "https://vue3-vite-todo-list-rho.vercel.app/", // Allow specific origins
+    origin: "*", // Allow specific origins
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], // Allow specific HTTP methods
     preflightContinue: false,
     optionsSuccessStatus: 204,
