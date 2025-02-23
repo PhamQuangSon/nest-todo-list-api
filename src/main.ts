@@ -8,7 +8,8 @@ async function bootstrap() {
   app.enableCors({
     origin: "https://vue3-vite-todo-list-rho.vercel.app/", // Allow specific origins
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], // Allow specific HTTP methods
-    credentials: true, // If you need to send cookies or authentication headers
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
   });
 
   const port = process.env.PORT || 3000;
