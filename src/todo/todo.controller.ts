@@ -7,18 +7,21 @@ import {
   Body,
   Param,
   Query,
-} from '@nestjs/common';
-import { TodoService } from './todo.service';
-import { TodoItem } from './todo.interface';
+  UseInterceptors,
+} from "@nestjs/common";
+import { TodoService } from "./todo.service";
+import { TodoItem } from "./todo.interface";
+import { CacheInterceptor } from "@nestjs/cache-manager";
 
-@Controller('todos')
+@Controller("todos")
+@UseInterceptors(CacheInterceptor)
 export class TodoController {
   constructor(private readonly todoService: TodoService) {}
 
   @Get()
-  findAll(@Query('userRole') userRole: string): TodoItem[] {
-    const todos = this.todoService.findAll();
-    if (userRole === 'free') {
+  async findAll(@Query("userRole") userRole: string): Promise<TodoItem[]> {
+    const todos = await this.todoService.findAll();
+    if (userRole === "free") {
       return todos.map(({ id, title, completed, createdAt }) => ({
         id,
         title,
@@ -29,13 +32,13 @@ export class TodoController {
     return todos;
   }
 
-  @Get(':id')
-  findOne(
-    @Param('id') id: string,
-    @Query('userRole') userRole: string,
-  ): TodoItem {
-    const todo = this.todoService.findOne(id);
-    if (userRole === 'free') {
+  @Get(":id")
+  async findOne(
+    @Param("id") id: string,
+    @Query("userRole") userRole: string,
+  ): Promise<TodoItem> {
+    const todo = await this.todoService.findOne(id);
+    if (userRole === "free") {
       const { id, title, completed, createdAt } = todo;
       return { id, title, completed, createdAt };
     }
@@ -43,35 +46,35 @@ export class TodoController {
   }
 
   @Post()
-  create(
-    @Body() todo: Omit<TodoItem, 'id'>,
-    @Query('userRole') userRole: string,
-  ): TodoItem {
-    const newTodo = this.todoService.create(todo);
-    if (userRole === 'free') {
+  async create(
+    @Body() todo: Omit<TodoItem, "id">,
+    @Query("userRole") userRole: string,
+  ): Promise<TodoItem> {
+    const newTodo = await this.todoService.create(todo);
+    if (userRole === "free") {
       const { id, title, completed, createdAt } = newTodo;
       return { id, title, completed, createdAt };
     }
     return newTodo;
   }
 
-  @Put(':id')
-  update(
-    @Param('id') id: string,
+  @Put(":id")
+  async update(
+    @Param("id") id: string,
     @Body() todo: Partial<TodoItem>,
-    @Query('userRole') userRole: string,
-  ): TodoItem {
-    const updatedTodo = this.todoService.update(id, todo);
-    if (userRole === 'free') {
+    @Query("userRole") userRole: string,
+  ): Promise<TodoItem> {
+    const updatedTodo = await this.todoService.update(id, todo);
+    if (userRole === "free") {
       const { id, title, completed, createdAt } = updatedTodo;
       return { id, title, completed, createdAt };
     }
     return updatedTodo;
   }
 
-  @Delete(':id')
-  delete(@Param('id') id: string): { success: boolean } {
-    const result = this.todoService.delete(id);
+  @Delete(":id")
+  async delete(@Param("id") id: string): Promise<{ success: boolean }> {
+    const result = await this.todoService.delete(id);
     return { success: result };
   }
 }
