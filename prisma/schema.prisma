@@ -1,5 +1,10 @@
 generator client {
   provider = "prisma-client-js"
+  // `metrics` exposes prisma_pool_connections_busy and
+  // prisma_client_queries_wait. Without them, "the database is slow" and "I am
+  // queueing for a connection" look identical from the outside — and they have
+  // opposite fixes (add an index vs. resize the pool).
+  previewFeatures = ["metrics"]
 }
 
 datasource db {

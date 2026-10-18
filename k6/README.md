@@ -99,6 +99,79 @@ Peak CPU was even across all three containers (87% / 89% / 98%), confirming
 round-robin. VUs needed fell from 2000 to 703 — Little's Law again: faster
 responses mean shorter iterations mean fewer concurrent VUs for the same rate.
 
+## Experiment 3 — connection_limit sweep
+
+`DB_POOL` in `docker-compose.yml` sets Prisma's per-instance pool.
+`constant-arrival-rate` so the load is byte-for-byte identical across runs.
+
+At 600 rps, 3 instances:
+
+| pool (per instance) | 2 | 5 | 10 | 25 |
+|---|---|---|---|---|
+| req/s | 718.6 | 718.1 | 719.1 | 704.4 |
+| p99 | 3.3ms | 2.9ms | 54.8ms | 4.1ms |
+
+At 1758 rps, 3 instances — and the pool metrics that explain it:
+
+| | pool=2 | pool=25 |
+|---|---|---|
+| req/s | 1758.4 | 1759.7 |
+| p99 | 8.2ms | 9.7ms |
+| max | 51ms | 158ms |
+| `prisma_pool_connections_open` | 2 | 25 |
+| `prisma_pool_connections_busy` | **1** | **0** |
+| `prisma_client_queries_wait` | 0 | 0 |
+| total wait across ~22.5k queries | 134ms | 59ms |
+| mean wait per query | **0.006ms** | **0.003ms** |
+
+Throughput is flat across a 12.5x range of pool sizes, and the larger pool has
+a *worse* tail. `connections_busy` says why: 1 of 2 connections in use, 0 of 25.
+The 23 extra connections do nothing but hold Postgres backends open — and
+`25 x 3 replicas = 75` of a `max_connections=100` budget spent for no gain,
+which is how you hit "too many connections" with zero performance to show.
+
+The lesson is the diagnostic order. `prisma_client_queries_wait ≈ 0` means the
+queries are fine and nothing is queueing for a connection, so resizing the pool
+cannot help. Checking that *before* blaming the database is the step most people
+skip — and Prisma's default of `num_cpus*2+1` per instance is wrong in the other
+direction the moment you run replicas, because every replica sizes its pool as
+though it owned the whole database.
+
+The `pool=10 / p99=54.8ms` cell is noise, not signal: pool=25 returns to 4.1ms.
+Worth leaving in as a reminder that one run is not a measurement.
+
+## Experiment 4 — drop the index, read the plan
+
+Same query as `findAllCursor`, 40 237 rows across 50 users (~805 each), 14 MB.
+
+```sql
+SELECT id, title, completed, time, version, "createdAt"
+FROM "Todo" WHERE "userId" = $1 ORDER BY id DESC LIMIT 21;
+```
+
+| | with `Todo_userId_id_idx` | index dropped |
+|---|---|---|
+| plan | `Index Scan using Todo_userId_id_idx` | `Index Scan Backward using Todo_pkey` |
+| **buffers** | **20** | **964** |
+| rows removed by filter | 0 | **1327** |
+| execution time | 0.103ms | 0.225ms |
+
+No sequential scan appears, which is itself worth understanding: `uuid(7)` keys
+are time-sortable, so walking the primary key backwards satisfies
+`ORDER BY id DESC` for free. Postgres takes that path and filters `userId` as it
+goes, discarding 1327 rows to find 21.
+
+Under load at 1500 rps the difference was almost invisible — p99 8.2ms vs 6.2ms,
+throughput identical — because all 14 MB sits in shared buffers and Node, not
+Postgres, is the constraint.
+
+**So read the buffers, not the clock.** 964 accesses instead of 20 is a 48x
+amplification being hidden by RAM. The rows-removed figure scales with the
+number of users: at 50 users roughly 1 row in 50 matches, so finding 21 costs
+~1300. At 5000 users it costs ~130 000, and once the table outgrows the buffer
+cache those become disk reads. The query that looks fine today falls off a cliff
+with no code change — only more data.
+
 ### nginx caches upstream DNS
 
 `upstream { server api:3000; }` resolves **once at startup**. After

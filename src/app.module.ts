@@ -4,6 +4,7 @@ import { ConfigModule } from "@nestjs/config";
 import { PrismaModule } from "./prisma/prisma.module";
 import { AuthModule } from "./auth/auth.module";
 import { TodoModule } from "./todo/todo.module";
+import { MetricsModule } from "./metrics/metrics.module";
 import { JwtAuthGuard } from "./auth/guards/jwt-auth.guard";
 import { validateEnv } from "./config/env";
 
@@ -17,6 +18,7 @@ import { validateEnv } from "./config/env";
     PrismaModule,
     AuthModule,
     TodoModule,
+    MetricsModule,
   ],
   providers: [
     // JwtAuthGuard as APP_GUARD protects every route by default.

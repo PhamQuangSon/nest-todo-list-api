@@ -95,6 +95,18 @@ const SCENARIOS = {
     ],
   },
 
+  // Fixed arrival rate, short duration. For A/B sweeps where exactly one
+  // variable changes (pool size, an index, a select list) and the load must be
+  // identical across runs. A ramping profile would make runs incomparable.
+  sweep: {
+    executor: "constant-arrival-rate",
+    rate: Number(__ENV.SWEEP_RATE || 600),
+    timeUnit: "1s",
+    duration: __ENV.SWEEP_DURATION || "60s",
+    preAllocatedVUs: 400,
+    maxVUs: 1500,
+  },
+
   // Long run at moderate load. Looking for memory/connection leaks, not latency.
   soak: {
     executor: "constant-arrival-rate",
