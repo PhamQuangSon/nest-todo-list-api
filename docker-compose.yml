@@ -45,6 +45,22 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── Migrations (one-shot) ───────────────────────────────────────────────────
+  # Runs to completion and exits. The api service waits for it, so every api
+  # replica starts against an already-migrated schema. Running migrations from
+  # the api command instead would have N replicas racing the same migration.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node_modules/.bin/prisma", "migrate", "deploy"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://todo:todo@postgres:5432/todo?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # ── NestJS API ──────────────────────────────────────────────────────────────
   api:
     build:
@@ -58,6 +74,8 @@ services:
       # Inside Compose, service names resolve correctly.
       DATABASE_URL: postgresql://todo:todo@postgres:5432/todo?schema=public&connection_limit=10&pool_timeout=10&connect_timeout=5
       REDIS_URL: redis://redis:6379
+      # Local-only value. Validated at boot: must be >= 32 chars.
+      JWT_SECRET: docker-compose-local-dev-secret-32chars
       # Change this to match your frontend origin. Comma-separated for multiple.
       CORS_ORIGINS: http://localhost:5173
     ports:
@@ -69,6 +87,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   # ── Nginx load balancer (used when --scale api=N) ───────────────────────────
   nginx:
