@@ -172,6 +172,61 @@ number of users: at 50 users roughly 1 row in 50 matches, so finding 21 costs
 cache those become disk reads. The query that looks fine today falls off a cliff
 with no code change — only more data.
 
+## Experiment 6 — one blocking endpoint, everything else pays
+
+`GET /todos/export` builds a CSV synchronously: whole result set into memory,
+then escaped row by row. `TodoService.exportCsv` is labelled as deliberately
+bad — Phase 5 moves it to a worker process. This measures what it costs first.
+
+Seed the power user (~20k todos, 45 MB of notes — someone who has used the app
+for years, not an artificial delay):
+
+```sql
+INSERT INTO "Todo" (id, "userId", title, completed, notes, "createdAt", "updatedAt", version)
+SELECT gen_random_uuid(), '<power-user-id>'::uuid, 'Power user task ' || g,
+       (g % 3 = 0), repeat('note content for row ' || g || ' ', 90),
+       now() - (g || ' minutes')::interval, now(), 0
+FROM generate_series(1, 20000) g;
+-- export is a paid feature, and notes are plan-gated
+UPDATE "User" SET plan='PAID' WHERE email='k6-power@loadtest.invalid';
+```
+
+One export: **49.4 MB, 0.62s**. Then the same traffic, with and without a single
+export per second arriving alongside it:
+
+```bash
+k6 run --env SCENARIO=sweep --env SWEEP_RATE=600 --env THINK_MIN=0.1 --env THINK_MAX=0.5 k6/main.js
+k6 run --env SCENARIO=sweep --env SWEEP_RATE=600 --env THINK_MIN=0.1 --env THINK_MAX=0.5 --env EXPORT_RPS=1 k6/main.js
+```
+
+`GET /todos` shares nothing with `/export` but the event loop:
+
+| | no export | +1 export/s | |
+|---|---|---|---|
+| p50 (overall) | 1.1ms | 1.2ms | unchanged |
+| **p95 `GET /todos`** | 1.4ms | **49.8ms** | **36x** |
+| **p99 `GET /todos`** | 2.7ms | **146.0ms** | **54x** |
+| max `GET /todos` | 16.1ms | 403.7ms | 25x |
+| **req/s** | 714.8 | **722.0** | identical |
+| fail % | 0.11 | 0.11 | identical |
+| **ELU** | 0.06 | **0.20** | 3.3x |
+
+The arithmetic closes exactly: 1 export/s round-robined across 3 instances is
+~20 exports per instance per minute, 0.62s each — about 20% of wall time with
+the loop blocked. ELU reports 0.20. Roughly one request in five lands inside a
+block and waits up to 620ms behind it.
+
+Two things worth keeping:
+
+**The median is untouched while the tail is destroyed.** p50 moved 1.1 → 1.2ms;
+p99 moved 2.7 → 146ms. Averages and throughput graphs show *nothing wrong* —
+722 rps, 0.11% errors, same as baseline. Only percentiles reveal it.
+
+**ELU is the signal; event loop delay was not.** `monitorEventLoopDelay`
+percentiles stayed at ~11ms in both runs, pinned near the 10ms sampler
+resolution and swamped by idle samples. `eventLoopUtilization` moved cleanly
+from 0.06 to 0.20. Prefer ELU for "is this process CPU-bound".
+
 ### nginx caches upstream DNS
 
 `upstream { server api:3000; }` resolves **once at startup**. After

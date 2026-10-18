@@ -133,6 +133,12 @@ const SCENARIOS = {
 
 export const SCENARIO_NAME = __ENV.SCENARIO || "smoke";
 
+// Experiment 6: when EXPORT_RPS is set, a second scenario runs ALONGSIDE the
+// main one, calling the deliberately-blocking /todos/export. The question it
+// answers is what that does to the p99 of GET /todos — an endpoint that shares
+// nothing with it but the event loop.
+export const EXPORT_RPS = Number(__ENV.EXPORT_RPS || 0);
+
 export function activeScenario() {
   const s = SCENARIOS[SCENARIO_NAME];
   if (!s) {
@@ -140,7 +146,22 @@ export function activeScenario() {
       `Unknown SCENARIO "${SCENARIO_NAME}". Valid: ${Object.keys(SCENARIOS).join(", ")}`,
     );
   }
-  return { [SCENARIO_NAME]: s };
+
+  const scenarios = { [SCENARIO_NAME]: s };
+
+  if (EXPORT_RPS > 0) {
+    scenarios.exporter = {
+      executor: "constant-arrival-rate",
+      rate: EXPORT_RPS,
+      timeUnit: "1s",
+      duration: __ENV.SWEEP_DURATION || "60s",
+      preAllocatedVUs: 10,
+      maxVUs: 50,
+      exec: "exportScenario",
+    };
+  }
+
+  return scenarios;
 }
 
 // Thresholds fail the run (non-zero exit) so this works in CI.

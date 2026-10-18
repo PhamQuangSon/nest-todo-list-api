@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   Headers,
   HttpCode,
   HttpStatus,
@@ -34,6 +35,14 @@ export class TodoController {
       cursor,
       limit ? Number(limit) : 20,
     );
+  }
+
+  // Must be declared before @Get(":id") — Nest matches in declaration order, so
+  // the parameterised route would otherwise swallow "/export" as an id.
+  @Get("export")
+  @Header("Content-Type", "text/csv; charset=utf-8")
+  async exportCsv(@CurrentUser() user: JwtPayload): Promise<string> {
+    return this.todoService.exportCsv(user.sub, user.plan);
   }
 
   @Get(":id")

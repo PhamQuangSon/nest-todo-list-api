@@ -173,6 +173,42 @@ export class TodoService {
     return updated;
   }
 
+  // DELIBERATELY BLOCKING — this is experiment 6 in k6/README.md, not a design
+  // to copy. Everything here runs synchronously on the event loop: the whole
+  // result set is loaded into memory, then CSV-escaped row by row. While it
+  // runs, this process serves NOTHING else — every concurrent request on this
+  // instance waits, including requests that never touch /export.
+  //
+  // Phase 5 moves this to a BullMQ worker in its own process. The point of
+  // keeping the bad version first is to measure what it costs.
+  async exportCsv(userId: string, plan: Plan): Promise<string> {
+    const todos = await this.prisma.todo.findMany({
+      where: { userId },
+      // Same plan gate as findOne. An export path that forgets it is the
+      // classic entitlement leak: the field never shows in the UI, so nobody
+      // notices it shipping in a CSV.
+      select: { ...LIST_SELECT, notes: plan === Plan.PAID },
+      orderBy: { id: "desc" },
+    });
+
+    const rows = [
+      "id,title,completed,time,version,createdAt,notes",
+      ...todos.map((t) =>
+        [
+          t.id,
+          csvEscape(t.title),
+          String(t.completed),
+          csvEscape(t.time),
+          String(t.version),
+          t.createdAt.toISOString(),
+          csvEscape((t as { notes?: string | null }).notes ?? null),
+        ].join(","),
+      ),
+    ];
+
+    return rows.join("\n");
+  }
+
   async delete(userId: string, id: string): Promise<void> {
     const existing = await this.prisma.todo.findUnique({
       where: { id },
@@ -183,4 +219,9 @@ export class TodoService {
     }
     await this.prisma.todo.delete({ where: { id } });
   }
+}
+
+function csvEscape(value: string | null): string {
+  if (value === null) return "";
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }

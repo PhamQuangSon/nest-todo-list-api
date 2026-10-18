@@ -18,6 +18,25 @@ const JSON_HEADERS = { "Content-Type": "application/json" };
 // fs and DNS. Logging in per iteration caps the whole test at roughly 40-80 rps
 // and starves unrelated I/O — you would spend the afternoon "optimizing" a
 // bottleneck that no real traffic pattern produces.
+// The power user for experiment 6: seeded out of band with ~20k todos, so one
+// export is genuinely expensive rather than artificially slowed down.
+export const POWER_USER_EMAIL = `k6-power${USER_EMAIL_DOMAIN}`;
+
+export function mintPowerUserToken() {
+  const res = http.post(
+    `${BASE_URL}/auth/login`,
+    JSON.stringify({ email: POWER_USER_EMAIL, password: USER_PASSWORD }),
+    { headers: JSON_HEADERS, tags: { name: "setup:login" } },
+  );
+  if (res.status !== 200) {
+    throw new Error(
+      `setup: power user ${POWER_USER_EMAIL} not available — ${res.status}. ` +
+        `Seed it first (see experiment 6 in k6/README.md).`,
+    );
+  }
+  return res.json("accessToken");
+}
+
 export function mintUsers() {
   const users = [];
 

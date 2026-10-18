@@ -1,5 +1,5 @@
 import http from "k6/http";
-import { sleep } from "k6";
+import { check, sleep } from "k6";
 import {
   activeScenario,
   thresholds,
@@ -7,8 +7,10 @@ import {
   NUM_USERS,
   THINK_MIN,
   THINK_MAX,
+  EXPORT_RPS,
+  BASE_URL,
 } from "./lib/config.js";
-import { mintUsers } from "./lib/setup.js";
+import { mintUsers, mintPowerUserToken } from "./lib/setup.js";
 import { runWeightedAction } from "./lib/actions.js";
 
 // 412 Precondition Failed is a CORRECT response, not a failure: it means
@@ -28,8 +30,9 @@ export const options = {
 export function setup() {
   console.log(`scenario=${SCENARIO_NAME} minting ${NUM_USERS} users…`);
   const users = mintUsers();
+  const powerToken = EXPORT_RPS > 0 ? mintPowerUserToken() : null;
   console.log(`setup done: ${users.length} users ready`);
-  return { users };
+  return { users, powerToken };
 }
 
 export default function (data) {
@@ -43,4 +46,18 @@ export default function (data) {
   // Think time. Under an open-model executor this does not change the arrival
   // rate — only how many VUs k6 needs to sustain it. See THINK_MIN in config.js.
   sleep(THINK_MIN + Math.random() * (THINK_MAX - THINK_MIN));
+}
+
+// Experiment 6. Runs as its own scenario next to the main traffic. It does not
+// touch any row the other scenario reads — the only thing the two share is the
+// Node event loop, which is the whole point of the measurement.
+export function exportScenario(data) {
+  const res = http.get(`${BASE_URL}/todos/export`, {
+    headers: { Authorization: `Bearer ${data.powerToken}` },
+    tags: { name: "GET /todos/export" },
+    // 50MB of CSV; without this k6 keeps the whole body per response.
+    responseType: "none",
+    timeout: "120s",
+  });
+  check(res, { "export: 200": (r) => r.status === 200 });
 }
