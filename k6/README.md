@@ -48,6 +48,40 @@ saturation: **zero lost updates**.
   4-thread libuv pool) and you would spend the day tuning a bottleneck no real
   traffic produces.
 
+## Observability
+
+```bash
+docker compose up -d --scale api=3
+docker compose restart nginx          # see the DNS note at the bottom
+```
+
+- Grafana: <http://localhost:3030> → dashboard **Phase 2 — diagnosis order**
+  (anonymous admin, no login)
+- Prometheus: <http://localhost:9090>
+- Raw metrics: `GET /api/v1/metrics` on any instance
+
+Prometheus scrapes **each replica directly** via Compose DNS service discovery,
+never through nginx. Scraping the load balancer would round-robin the scrape, so
+consecutive samples would come from different processes and every per-instance
+gauge — ELU, pool busy, RSS — would be meaningless. `--scale api=N` is picked up
+automatically.
+
+The dashboard rows are the diagnostic procedure, in order:
+
+1. **Node or DB?** Query rate next to request rate. Scaling together with rising
+   latency points at the database; flat query rate with rising latency points at
+   Node.
+2. **CPU-bound or waiting?** ELU. Above 0.9 the process is CPU-bound and no index
+   will help. Low ELU with high latency means it is waiting on something.
+3. **Check the pool before blaming the database.** `prisma_client_queries_wait`
+   above zero means the queries are fine and requests are queueing for a
+   *connection* — resize the pool, do not add an index. At zero, pool tuning
+   cannot help, which is what experiment 3 found.
+
+Then, and only then, `pg_stat_statements` sorted by `total_exec_time` (not
+`mean` — a 0.4ms query called 80 000 times beats a 200ms query called twice),
+`EXPLAIN (ANALYZE, BUFFERS)`, and `node --cpu-prof` for a CPU profile.
+
 ## Experiment 1 — single instance ceiling
 
 Same server, same scenario, only think time changed.

@@ -1,0 +1,191 @@
+{
+  "uid": "phase2-diagnosis",
+  "title": "Phase 2 — diagnosis order",
+  "description": "Panels are ordered as the diagnostic procedure, top to bottom: is it Node or the DB, is Node CPU-bound or waiting, and is the pool queueing before you blame the database.",
+  "tags": ["phase2", "load-testing"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "1. Node or DB? Compare request rate against query rate",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Prisma queries/sec per instance",
+      "description": "If this scales with load while latency climbs, time is going to the database. Flat here with rising latency points at Node.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(prisma_client_queries_total[30s])",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Datasource queries/sec per instance",
+      "description": "Datasource queries exceed client queries when one Prisma call fans out to several SQL statements — transactions, or relation loads.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(prisma_datasource_queries_total[30s])",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "2. CPU-bound or waiting? ELU is the signal",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Event loop utilization (ELU)",
+      "description": "Above 0.9 the process is CPU-bound and no index will help. Low ELU with high latency means it is waiting on something. Experiment 6 moved this from 0.06 to 0.20 with a single blocking export per second.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "fillOpacity": 15 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.7 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_utilization",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Event loop delay (p99)",
+      "description": "Queueing delay, not work. Pinned near the 10ms sampler resolution at low load, so prefer ELU for 'is this CPU-bound'.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 10 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "nodejs_eventloop_delay_seconds{quantile=\"0.99\"}",
+          "legendFormat": "{{instance}} p99",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "3. Check the pool BEFORE blaming the database",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Queries waiting for a connection",
+      "description": "The single most misdiagnosed signal here. Above zero means the queries are fine and requests are queueing for a CONNECTION — resize the pool, do not add an index. At zero, pool tuning cannot help you.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "fillOpacity": 20 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "prisma_client_queries_wait",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pool connections: busy vs open",
+      "description": "Experiment 3: busy sat at 1 of 2 and 0 of 25. Connections that are open but never busy add no capacity, only idle Postgres backends against max_connections.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "prisma_pool_connections_busy",
+          "legendFormat": "{{instance}} busy",
+          "refId": "A"
+        },
+        {
+          "expr": "prisma_pool_connections_open",
+          "legendFormat": "{{instance}} open",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Process memory (RSS)",
+      "description": "For the soak scenario: load-proportional growth that settles is buffering, a straight line that never comes down is a leak.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "nodejs_memory_bytes{kind=\"rss\"}",
+          "legendFormat": "{{instance}} rss",
+          "refId": "A"
+        },
+        {
+          "expr": "nodejs_memory_bytes{kind=\"heap_used\"}",
+          "legendFormat": "{{instance}} heap",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}

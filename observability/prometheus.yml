@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Each api replica is scraped DIRECTLY, never through nginx. Going through the
+  # load balancer would round-robin the scrape, so consecutive samples would
+  # come from different processes and every per-instance gauge (ELU, pool busy,
+  # RSS) would be meaningless noise.
+  #
+  # Compose publishes an A record per replica under the service name, so DNS
+  # discovery picks up `--scale api=N` automatically.
+  - job_name: api
+    metrics_path: /api/v1/metrics
+    dns_sd_configs:
+      - names: [api]
+        type: A
+        port: 3000
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
