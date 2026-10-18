@@ -29,7 +29,23 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-floating-promises': 'warn',
-      '@typescript-eslint/no-unsafe-argument': 'warn'
+      '@typescript-eslint/no-unsafe-argument': 'warn',
+      // HttpStatus enum comparisons are safe; the type checker just doesn't
+      // know the numeric values are enum members.
+      '@typescript-eslint/no-unsafe-enum-comparison': 'off',
+      // Allow _-prefixed variables that are intentionally unused (destructuring).
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { varsIgnorePattern: '^_', argsIgnorePattern: '^_' },
+      ],
+    },
+  },
+  {
+    // supertest types `body` as `any`; unsafe-member-access is noise in tests.
+    files: ['test/**/*.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
     },
   },
 );

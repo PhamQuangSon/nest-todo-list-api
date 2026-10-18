@@ -3,5 +3,6 @@ export interface TodoItem {
   title: string;
   completed: boolean;
   createdAt: Date;
+  time?: string;
   notes?: string;
 }

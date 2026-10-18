@@ -1,0 +1,86 @@
+services:
+
+  # ── PostgreSQL 16 ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: todo
+      POSTGRES_PASSWORD: todo
+      POSTGRES_DB: todo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # pg_stat_statements: needed for Phase 2 query profiling.
+    # shared_preload_libraries loads it at startup so EXPLAIN ANALYZE shows
+    # statement-level stats without a restart.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+    ports:
+      # Use 5433 to avoid conflicting with a locally-installed Postgres on 5432.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U todo -d todo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis 7 ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # noeviction: required by BullMQ. allkeys-lru evicts jobs silently at OOM.
+    command: redis-server --maxmemory-policy noeviction --maxmemory 256mb
+    volumes:
+      - redis_data:/data
+    ports:
+      # Use 6380 to avoid conflicting with a locally-installed Redis on 6379.
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── NestJS API ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Use host.docker.internal when running without --scale on macOS/Windows.
+      # Inside Compose, service names resolve correctly.
+      DATABASE_URL: postgresql://todo:todo@postgres:5432/todo?schema=public&connection_limit=10&pool_timeout=10&connect_timeout=5
+      REDIS_URL: redis://redis:6379
+      # Change this to match your frontend origin. Comma-separated for multiple.
+      CORS_ORIGINS: http://localhost:5173
+    ports:
+      # When --scale api=N, Docker assigns ephemeral host ports.
+      # An nginx or Caddy load balancer in front removes the need for fixed ports.
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Nginx load balancer (used when --scale api=N) ───────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:

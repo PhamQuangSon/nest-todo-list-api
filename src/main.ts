@@ -1,19 +1,17 @@
 import { NestFactory } from "@nestjs/core";
+import { Logger } from "@nestjs/common";
 import { AppModule } from "./app.module";
+import { configureApp } from "./bootstrap";
+import { readEnv } from "./config/env";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  configureApp(app);
 
-  // Enable CORS (customize origins as needed)
-  app.enableCors({
-    origin: "*", // Allow specific origins
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], // Allow specific HTTP methods
-    preflightContinue: false,
-    optionsSuccessStatus: 204,
-  });
-
-  const port = process.env.PORT || 3000;
+  const { port } = readEnv();
   await app.listen(port);
-  console.log(`Application is running on: ${await app.getUrl()}`);
+
+  new Logger("Bootstrap").log(`Listening on ${await app.getUrl()}`);
 }
-bootstrap();
+
+void bootstrap();

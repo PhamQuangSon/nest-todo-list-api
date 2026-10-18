@@ -1,21 +1,16 @@
 import { Module } from "@nestjs/common";
-import { CacheModule, CacheInterceptor } from "@nestjs/cache-manager";
+import { ConfigModule } from "@nestjs/config";
 import { TodoModule } from "./todo/todo.module";
-import { APP_INTERCEPTOR } from "@nestjs/core";
+import { validateEnv } from "./config/env";
+
 @Module({
   imports: [
-    CacheModule.register({
-      ttl: 5, // seconds
-      max: 10, // maximum number of items in cache
+    ConfigModule.forRoot({
       isGlobal: true,
+      cache: true,
+      validate: validateEnv,
     }),
     TodoModule,
-  ],
-  providers: [
-    {
-      provide: APP_INTERCEPTOR,
-      useClass: CacheInterceptor,
-    },
   ],
 })
 export class AppModule {}

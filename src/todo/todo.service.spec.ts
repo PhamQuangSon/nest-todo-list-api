@@ -1,6 +1,6 @@
-import { Test, type TestingModule } from "@nestjs/testing";
+import { Test, TestingModule } from "@nestjs/testing";
+import { NotFoundException } from "@nestjs/common";
 import { TodoService } from "./todo.service";
-import type { TodoItem } from "./todo.interface";
 
 describe("TodoService", () => {
   let service: TodoService;
@@ -13,70 +13,72 @@ describe("TodoService", () => {
     service = module.get<TodoService>(TodoService);
   });
 
-  it("should be defined", () => {
-    expect(service).toBeDefined();
+  it("returns the seeded todos", async () => {
+    await expect(service.findAll()).resolves.toHaveLength(3);
   });
 
-  it("should create a todo", () => {
-    const todo: Omit<TodoItem, "id"> = {
-      title: "Test Todo",
-      completed: false,
-      createdAt: new Date(),
-    };
-    const createdTodo = service.create(todo);
-    expect(createdTodo).toHaveProperty("id");
-    expect(createdTodo.title).toBe(todo.title);
-  });
+  // Regression: findOne used to read a field only populated as a side effect of
+  // findAll, so a cold instance 404'd on a todo that existed.
+  it("finds a todo without findAll being called first", async () => {
+    const [seeded] = await service.findAll();
+    const fresh = await Test.createTestingModule({
+      providers: [TodoService],
+    }).compile();
+    const coldService = fresh.get<TodoService>(TodoService);
+    const [coldSeeded] = await coldService.findAll();
 
-  it("should find all todos", () => {
-    const todo1 = service.create({
-      title: "Todo 1",
-      completed: false,
-      createdAt: new Date(),
+    await expect(coldService.findOne(coldSeeded.id)).resolves.toMatchObject({
+      title: seeded.title,
     });
-    const todo2 = service.create({
-      title: "Todo 2",
+  });
+
+  it("creates a todo with a generated id", async () => {
+    const created = await service.create({
+      title: "Write a spec that compiles",
+      completed: false,
+    });
+
+    expect(created.id).toHaveLength(36);
+    expect(created.title).toBe("Write a spec that compiles");
+    await expect(service.findOne(created.id)).resolves.toEqual(created);
+  });
+
+  // Regression: ids came from `todos.length + 1`, so deleting then creating
+  // produced a duplicate id.
+  it("does not reuse an id after a delete", async () => {
+    const first = await service.create({ title: "first", completed: false });
+    await service.delete(first.id);
+    const second = await service.create({ title: "second", completed: false });
+
+    expect(second.id).not.toBe(first.id);
+  });
+
+  it("merges a partial update and keeps the id", async () => {
+    const created = await service.create({
+      title: "original",
+      completed: false,
+      notes: "keep me",
+    });
+
+    const updated = await service.update(created.id, { completed: true });
+
+    expect(updated).toMatchObject({
+      id: created.id,
+      title: "original",
       completed: true,
-      createdAt: new Date(),
+      notes: "keep me",
     });
-    const todos = service.findAll();
-    expect(todos).toHaveLength(2);
-    expect(todos).toContainEqual(todo1);
-    expect(todos).toContainEqual(todo2);
   });
 
-  it("should find a todo by id", () => {
-    const todo = service.create({
-      title: "Todo 1",
-      completed: false,
-      createdAt: new Date(),
-    });
-    const foundTodo = service.findById(todo.id);
-    expect(foundTodo).toEqual(todo);
-  });
-
-  it("should update a todo", () => {
-    const todo = service.create({
-      title: "Todo 1",
-      completed: false,
-      createdAt: new Date(),
-    });
-    const updatedTodo = service.update(todo.id, {
-      title: "Updated Todo",
-      completed: true,
-    });
-    expect(updatedTodo.title).toBe("Updated Todo");
-    expect(updatedTodo.completed).toBe(true);
-  });
-
-  it("should delete a todo", () => {
-    const todo = service.create({
-      title: "Todo 1",
-      completed: false,
-      createdAt: new Date(),
-    });
-    service.delete(todo.id);
-    const foundTodo = service.findById(todo.id);
-    expect(foundTodo).toBeUndefined();
+  it("throws NotFound for a missing todo", async () => {
+    await expect(service.findOne("does-not-exist")).rejects.toThrow(
+      NotFoundException,
+    );
+    await expect(service.update("does-not-exist", {})).rejects.toThrow(
+      NotFoundException,
+    );
+    await expect(service.delete("does-not-exist")).rejects.toThrow(
+      NotFoundException,
+    );
   });
 });

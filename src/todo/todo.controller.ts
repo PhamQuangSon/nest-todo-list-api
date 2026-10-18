@@ -1,80 +1,76 @@
 import {
-  Controller,
-  Get,
-  Post,
-  Put,
-  Delete,
   Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  Patch,
+  Post,
   Query,
-  UseInterceptors,
 } from "@nestjs/common";
 import { TodoService } from "./todo.service";
 import { TodoItem } from "./todo.interface";
-import { CacheInterceptor } from "@nestjs/cache-manager";
+import { CreateTodoDto } from "./dto/create-todo.dto";
+import { UpdateTodoDto } from "./dto/update-todo.dto";
+
+// `userRole` is a client-supplied query param and therefore not a security
+// control. Phase 1 replaces it with a verified JWT claim.
+type LegacyRole = "free" | "paid" | undefined;
+
+function applyPlan(todo: TodoItem, role: LegacyRole): TodoItem {
+  if (role !== "free") {
+    return todo;
+  }
+  const { notes: _notes, ...rest } = todo;
+  return rest;
+}
 
 @Controller("todos")
-@UseInterceptors(CacheInterceptor)
 export class TodoController {
   constructor(private readonly todoService: TodoService) {}
 
   @Get()
-  async findAll(@Query("userRole") userRole: string): Promise<TodoItem[]> {
+  async findAll(@Query("userRole") userRole: LegacyRole): Promise<TodoItem[]> {
     const todos = await this.todoService.findAll();
-    if (userRole === "free") {
-      return todos.map(({ id, title, completed, createdAt }) => ({
-        id,
-        title,
-        completed,
-        createdAt,
-      }));
-    }
-    return todos;
+    return todos.map((todo) => applyPlan(todo, userRole));
   }
 
   @Get(":id")
   async findOne(
     @Param("id") id: string,
-    @Query("userRole") userRole: string,
+    @Query("userRole") userRole: LegacyRole,
   ): Promise<TodoItem> {
-    const todo = await this.todoService.findOne(id);
-    if (userRole === "free") {
-      const { id, title, completed, createdAt } = todo;
-      return { id, title, completed, createdAt };
-    }
-    return todo;
+    return applyPlan(await this.todoService.findOne(id), userRole);
   }
 
   @Post()
   async create(
-    @Body() todo: Omit<TodoItem, "id">,
-    @Query("userRole") userRole: string,
+    @Body() dto: CreateTodoDto,
+    @Query("userRole") userRole: LegacyRole,
   ): Promise<TodoItem> {
-    const newTodo = await this.todoService.create(todo);
-    if (userRole === "free") {
-      const { id, title, completed, createdAt } = newTodo;
-      return { id, title, completed, createdAt };
-    }
-    return newTodo;
+    const created = await this.todoService.create({
+      title: dto.title,
+      completed: dto.completed ?? false,
+      time: dto.time,
+      notes: dto.notes,
+    });
+    return applyPlan(created, userRole);
   }
 
-  @Put(":id")
+  @Patch(":id")
   async update(
     @Param("id") id: string,
-    @Body() todo: Partial<TodoItem>,
-    @Query("userRole") userRole: string,
+    @Body() dto: UpdateTodoDto,
+    @Query("userRole") userRole: LegacyRole,
   ): Promise<TodoItem> {
-    const updatedTodo = await this.todoService.update(id, todo);
-    if (userRole === "free") {
-      const { id, title, completed, createdAt } = updatedTodo;
-      return { id, title, completed, createdAt };
-    }
-    return updatedTodo;
+    return applyPlan(await this.todoService.update(id, dto), userRole);
   }
 
   @Delete(":id")
-  async delete(@Param("id") id: string): Promise<{ success: boolean }> {
-    const result = await this.todoService.delete(id);
-    return { success: result };
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(@Param("id") id: string): Promise<void> {
+    await this.todoService.delete(id);
   }
 }
