@@ -41,11 +41,12 @@ export default tseslint.config(
     },
   },
   {
-    // supertest types `body` as `any`; unsafe-member-access is noise in tests.
+    // supertest types body and getHttpServer() as `any`; turn off noise in tests.
     files: ['test/**/*.ts'],
     rules: {
       '@typescript-eslint/no-unsafe-member-access': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
     },
   },
 );

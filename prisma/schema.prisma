@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  FREE
+  PAID
+}
+
+model User {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  plan         Plan     @default(FREE)
+  todoCount    Int      @default(0)
+  // Bump to invalidate all access tokens for this user at once.
+  tokenVersion Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  todos    Todo[]
+  sessions Session[]
+}
+
+model Todo {
+  id     String @id @default(uuid(7)) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title     String
+  completed Boolean  @default(false)
+  notes     String?
+  time      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Optimistic concurrency: client reads version, sends If-Match, server
+  // checks version in WHERE clause — no transaction, no row lock.
+  version Int @default(0)
+
+  // Idempotency: client generates a UUID before POST; duplicate with the
+  // same clientRequestId returns the existing row (catches 500→retry storms).
+  clientRequestId String?
+
+  @@unique([userId, clientRequestId])
+  // Composite covering index. uuid7 is time-sortable so id DESC == createdAt DESC.
+  @@index([userId, id(sort: Desc)])
+}
+
+model Session {
+  id     String @id @default(uuid(7)) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // SHA-256 hash of the raw token — O(1) unique lookup, no KDF overhead.
+  tokenHash String   @unique
+  // Groups all rotations from one login. Reuse of any family member revokes all.
+  familyId  String   @db.Uuid
+  expiresAt DateTime
+  revokedAt DateTime?
+  // Points to the successor token for grace-window replay.
+  replacedById String? @unique @db.Uuid
+
+  createdAt DateTime @default(now())
+}

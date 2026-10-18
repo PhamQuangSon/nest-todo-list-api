@@ -1,84 +1,149 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { NotFoundException } from "@nestjs/common";
+import { NotFoundException, PreconditionFailedException } from "@nestjs/common";
+import { Plan, Prisma } from "@prisma/client";
 import { TodoService } from "./todo.service";
+import { PrismaService } from "../prisma/prisma.service";
+
+const USER_ID = "01a00000-0000-7000-8000-000000000001";
+const TODO_ID = "01a00000-0000-7000-8000-000000000002";
+
+const fakeTodo = {
+  id: TODO_ID,
+  title: "Test todo",
+  completed: false,
+  time: null,
+  version: 0,
+  createdAt: new Date(),
+  notes: null,
+};
+
+function makePrismaMock() {
+  return {
+    todo: {
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+      delete: jest.fn(),
+    },
+  };
+}
 
 describe("TodoService", () => {
   let service: TodoService;
+  let prismaMock: ReturnType<typeof makePrismaMock>;
 
   beforeEach(async () => {
+    prismaMock = makePrismaMock();
+
     const module: TestingModule = await Test.createTestingModule({
-      providers: [TodoService],
+      providers: [
+        TodoService,
+        { provide: PrismaService, useValue: prismaMock },
+      ],
     }).compile();
 
     service = module.get<TodoService>(TodoService);
   });
 
-  it("returns the seeded todos", async () => {
-    await expect(service.findAll()).resolves.toHaveLength(3);
-  });
+  describe("findAllCursor", () => {
+    it("returns items and null nextCursor when fewer than limit", async () => {
+      prismaMock.todo.findMany.mockResolvedValue([fakeTodo]);
 
-  // Regression: findOne used to read a field only populated as a side effect of
-  // findAll, so a cold instance 404'd on a todo that existed.
-  it("finds a todo without findAll being called first", async () => {
-    const [seeded] = await service.findAll();
-    const fresh = await Test.createTestingModule({
-      providers: [TodoService],
-    }).compile();
-    const coldService = fresh.get<TodoService>(TodoService);
-    const [coldSeeded] = await coldService.findAll();
+      const result = await service.findAllCursor(USER_ID, undefined, 20);
 
-    await expect(coldService.findOne(coldSeeded.id)).resolves.toMatchObject({
-      title: seeded.title,
+      expect(result.items).toHaveLength(1);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it("returns nextCursor when a full page is returned", async () => {
+      const items = Array.from({ length: 21 }, (_, i) => ({
+        ...fakeTodo,
+        id: `id-${i}`,
+      }));
+      prismaMock.todo.findMany.mockResolvedValue(items);
+
+      const result = await service.findAllCursor(USER_ID, undefined, 20);
+
+      expect(result.items).toHaveLength(20);
+      expect(result.nextCursor).toBe("id-19");
     });
   });
 
-  it("creates a todo with a generated id", async () => {
-    const created = await service.create({
-      title: "Write a spec that compiles",
-      completed: false,
+  describe("create — idempotency", () => {
+    it("returns idempotent: false for a new todo", async () => {
+      prismaMock.todo.create.mockResolvedValue(fakeTodo);
+
+      const result = await service.create(USER_ID, { title: "new" }, Plan.FREE);
+
+      expect(result.idempotent).toBe(false);
+      expect(result.todo.title).toBe("Test todo");
     });
 
-    expect(created.id).toHaveLength(36);
-    expect(created.title).toBe("Write a spec that compiles");
-    await expect(service.findOne(created.id)).resolves.toEqual(created);
-  });
+    it("returns idempotent: true when clientRequestId already exists (P2002)", async () => {
+      const p2002 = new Prisma.PrismaClientKnownRequestError(
+        "Unique constraint failed",
+        { code: "P2002", clientVersion: "6.0.0", meta: {} },
+      );
+      prismaMock.todo.create.mockRejectedValue(p2002);
+      prismaMock.todo.findUnique.mockResolvedValue(fakeTodo);
 
-  // Regression: ids came from `todos.length + 1`, so deleting then creating
-  // produced a duplicate id.
-  it("does not reuse an id after a delete", async () => {
-    const first = await service.create({ title: "first", completed: false });
-    await service.delete(first.id);
-    const second = await service.create({ title: "second", completed: false });
+      const result = await service.create(
+        USER_ID,
+        { title: "dup", clientRequestId: "client-req-id-1" },
+        Plan.FREE,
+      );
 
-    expect(second.id).not.toBe(first.id);
-  });
-
-  it("merges a partial update and keeps the id", async () => {
-    const created = await service.create({
-      title: "original",
-      completed: false,
-      notes: "keep me",
+      expect(result.idempotent).toBe(true);
+      expect(result.todo.id).toBe(TODO_ID);
     });
 
-    const updated = await service.update(created.id, { completed: true });
+    it("re-throws P2002 when no clientRequestId is present", async () => {
+      const p2002 = new Prisma.PrismaClientKnownRequestError(
+        "Unique constraint failed",
+        { code: "P2002", clientVersion: "6.0.0", meta: {} },
+      );
+      prismaMock.todo.create.mockRejectedValue(p2002);
 
-    expect(updated).toMatchObject({
-      id: created.id,
-      title: "original",
-      completed: true,
-      notes: "keep me",
+      // No clientRequestId → not an idempotency key, must propagate.
+      await expect(
+        service.create(USER_ID, { title: "no key" }, Plan.FREE),
+      ).rejects.toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
     });
   });
 
-  it("throws NotFound for a missing todo", async () => {
-    await expect(service.findOne("does-not-exist")).rejects.toThrow(
-      NotFoundException,
-    );
-    await expect(service.update("does-not-exist", {})).rejects.toThrow(
-      NotFoundException,
-    );
-    await expect(service.delete("does-not-exist")).rejects.toThrow(
-      NotFoundException,
-    );
+  describe("update — optimistic concurrency", () => {
+    it("throws PreconditionFailedException when version does not match", async () => {
+      prismaMock.todo.updateMany.mockResolvedValue({ count: 0 });
+      prismaMock.todo.findUnique.mockResolvedValue({
+        version: 5,
+        userId: USER_ID,
+      });
+
+      await expect(
+        service.update(USER_ID, TODO_ID, { title: "new" }, 3, Plan.FREE),
+      ).rejects.toBeInstanceOf(PreconditionFailedException);
+    });
+
+    it("throws NotFoundException when todo does not exist", async () => {
+      prismaMock.todo.updateMany.mockResolvedValue({ count: 0 });
+      prismaMock.todo.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.update(USER_ID, TODO_ID, { title: "x" }, 0, Plan.FREE),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe("delete", () => {
+    it("throws NotFoundException for a missing todo", async () => {
+      prismaMock.todo.findUnique.mockResolvedValue(null);
+
+      await expect(service.delete(USER_ID, TODO_ID)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
   });
 });

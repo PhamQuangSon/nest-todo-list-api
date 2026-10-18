@@ -1,72 +1,186 @@
-/* eslint-disable @typescript-eslint/require-await */
-// All service methods are declared async to match the Phase 1 Prisma
-// interface, which will add `await`. Disable the rule for this file only.
-import { Injectable, NotFoundException } from "@nestjs/common";
-import { randomUUID } from "node:crypto";
-import { TodoItem } from "./todo.interface";
+import {
+  Injectable,
+  NotFoundException,
+  PreconditionFailedException,
+} from "@nestjs/common";
+import { Plan, Prisma } from "@prisma/client";
+import { PrismaService } from "../prisma/prisma.service";
+import { CreateTodoDto } from "./dto/create-todo.dto";
+import { UpdateTodoDto } from "./dto/update-todo.dto";
+
+// Fields selected for list responses (notes excluded — large TEXT column).
+// Paid users fetch notes individually when they open a todo.
+const LIST_SELECT = {
+  id: true,
+  title: true,
+  completed: true,
+  time: true,
+  version: true,
+  createdAt: true,
+} as const;
+
+type ListTodo = Prisma.TodoGetPayload<{ select: typeof LIST_SELECT }>;
+
+export type DetailTodo = ListTodo & { notes: string | null };
+export type CreateResult = { todo: DetailTodo; idempotent: boolean };
+
 @Injectable()
 export class TodoService {
-  private readonly todos: TodoItem[] = [
-    {
-      id: randomUUID(),
-      title: "Learn NestJS cache",
-      completed: false,
-      createdAt: new Date("2025-02-15T10:00:00Z"),
-      notes: "Focus on dependency injection and modules",
-    },
-    {
-      id: randomUUID(),
-      title: "Build a RESTful API",
-      completed: true,
-      createdAt: new Date("2025-02-16T14:30:00Z"),
-      notes: "Implement CRUD operations for Todo items",
-    },
-    {
-      id: randomUUID(),
-      title: "Implement authentication",
-      completed: false,
-      createdAt: new Date("2025-02-17T09:15:00Z"),
-      notes: "Use JWT for user authentication",
-    },
-  ];
+  constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(): Promise<TodoItem[]> {
-    return this.todos;
+  async findAll(userId: string): Promise<ListTodo[]> {
+    return this.prisma.todo.findMany({
+      where: { userId },
+      select: LIST_SELECT,
+      orderBy: { id: "desc" },
+      take: 50,
+    });
   }
 
-  async findOne(id: string): Promise<TodoItem> {
-    const todo = this.todos.find((t) => t.id === id);
-    if (!todo) {
-      throw new NotFoundException(`Todo with ID "${id}" not found`);
-    }
-    return todo;
-  }
+  async findAllCursor(
+    userId: string,
+    cursor?: string,
+    limit = 20,
+  ): Promise<{ items: ListTodo[]; nextCursor: string | null }> {
+    const take = Math.min(limit, 100);
+    const items = await this.prisma.todo.findMany({
+      where: { userId, ...(cursor ? { id: { lt: cursor } } : {}) },
+      select: LIST_SELECT,
+      orderBy: { id: "desc" },
+      take: take + 1,
+    });
 
-  async create(todo: Omit<TodoItem, "id" | "createdAt">): Promise<TodoItem> {
-    const newTodo: TodoItem = {
-      ...todo,
-      id: randomUUID(),
-      createdAt: new Date(),
+    const hasMore = items.length > take;
+    if (hasMore) items.pop();
+    return {
+      items,
+      nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null,
     };
-    this.todos.push(newTodo);
-    return newTodo;
   }
 
-  async update(id: string, patch: Partial<TodoItem>): Promise<TodoItem> {
-    const index = this.todos.findIndex((t) => t.id === id);
-    if (index === -1) {
-      throw new NotFoundException(`Todo with ID "${id}" not found`);
+  async findOne(userId: string, id: string, plan: Plan): Promise<DetailTodo> {
+    const todo = await this.prisma.todo.findUnique({
+      where: { id },
+      select: { ...LIST_SELECT, userId: true, notes: plan === Plan.PAID },
+    });
+    if (!todo || todo.userId !== userId) {
+      throw new NotFoundException({ code: "NOT_FOUND" });
     }
-    this.todos[index] = { ...this.todos[index], ...patch, id };
-    return this.todos[index];
+    const { userId: _uid, ...rest } = todo;
+    return rest;
   }
 
-  async delete(id: string): Promise<boolean> {
-    const index = this.todos.findIndex((t) => t.id === id);
-    if (index === -1) {
-      throw new NotFoundException(`Todo with ID "${id}" not found`);
+  async create(
+    userId: string,
+    dto: CreateTodoDto,
+    plan: Plan,
+  ): Promise<CreateResult> {
+    try {
+      const todo = await this.prisma.todo.create({
+        data: {
+          userId,
+          title: dto.title,
+          completed: dto.completed ?? false,
+          time: dto.time,
+          notes: dto.notes,
+          clientRequestId: dto.clientRequestId,
+        },
+        select: { ...LIST_SELECT, notes: plan === Plan.PAID },
+      });
+      return { todo: todo, idempotent: false };
+    } catch (e) {
+      // Unique constraint on (userId, clientRequestId) → idempotent replay.
+      // Return the existing row so the client gets the same response as the
+      // original request, with 200 instead of 201.
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2002" &&
+        dto.clientRequestId
+      ) {
+        const existing = await this.prisma.todo.findUnique({
+          where: {
+            userId_clientRequestId: {
+              userId,
+              clientRequestId: dto.clientRequestId,
+            },
+          },
+          select: { ...LIST_SELECT, notes: plan === Plan.PAID },
+        });
+        if (existing) return { todo: existing, idempotent: true };
+      }
+      throw e;
     }
-    this.todos.splice(index, 1);
-    return true;
+  }
+
+  async update(
+    userId: string,
+    id: string,
+    dto: UpdateTodoDto,
+    ifMatch: number | undefined,
+    plan: Plan,
+  ): Promise<DetailTodo> {
+    if (ifMatch !== undefined) {
+      // Optimistic concurrency: check version in WHERE clause — no transaction.
+      const { count } = await this.prisma.todo.updateMany({
+        where: { id, userId, version: ifMatch },
+        data: {
+          ...(dto.title !== undefined && { title: dto.title }),
+          ...(dto.completed !== undefined && { completed: dto.completed }),
+          ...(dto.time !== undefined && { time: dto.time }),
+          ...(dto.notes !== undefined && { notes: dto.notes }),
+          version: { increment: 1 },
+        },
+      });
+
+      if (count === 0) {
+        const current = await this.prisma.todo.findUnique({
+          where: { id },
+          select: { version: true, userId: true },
+        });
+        if (!current || current.userId !== userId) {
+          throw new NotFoundException({ code: "NOT_FOUND" });
+        }
+        throw new PreconditionFailedException({
+          code: "VERSION_CONFLICT",
+          current: current.version,
+        });
+      }
+    } else {
+      // No If-Match: last-write-wins update.
+      const existing = await this.prisma.todo.findUnique({
+        where: { id },
+        select: { userId: true },
+      });
+      if (!existing || existing.userId !== userId) {
+        throw new NotFoundException({ code: "NOT_FOUND" });
+      }
+      await this.prisma.todo.update({
+        where: { id },
+        data: {
+          ...(dto.title !== undefined && { title: dto.title }),
+          ...(dto.completed !== undefined && { completed: dto.completed }),
+          ...(dto.time !== undefined && { time: dto.time }),
+          ...(dto.notes !== undefined && { notes: dto.notes }),
+          version: { increment: 1 },
+        },
+      });
+    }
+
+    const updated = await this.prisma.todo.findUniqueOrThrow({
+      where: { id },
+      select: { ...LIST_SELECT, notes: plan === Plan.PAID },
+    });
+    return updated;
+  }
+
+  async delete(userId: string, id: string): Promise<void> {
+    const existing = await this.prisma.todo.findUnique({
+      where: { id },
+      select: { userId: true },
+    });
+    if (!existing || existing.userId !== userId) {
+      throw new NotFoundException({ code: "NOT_FOUND" });
+    }
+    await this.prisma.todo.delete({ where: { id } });
   }
 }

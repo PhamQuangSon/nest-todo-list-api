@@ -2,6 +2,7 @@ import {
   IsBoolean,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
   MinLength,
 } from "class-validator";
@@ -26,4 +27,9 @@ export class CreateTodoDto {
   @IsString()
   @MaxLength(10_000)
   notes?: string;
+
+  // Client-generated UUID v4/v7 for idempotency (duplicate POST detection).
+  @IsOptional()
+  @IsUUID()
+  clientRequestId?: string;
 }

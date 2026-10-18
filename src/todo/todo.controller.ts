@@ -3,74 +3,97 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Param,
   Patch,
   Post,
   Query,
+  Res,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { TodoService } from "./todo.service";
-import { TodoItem } from "./todo.interface";
 import { CreateTodoDto } from "./dto/create-todo.dto";
 import { UpdateTodoDto } from "./dto/update-todo.dto";
-
-// `userRole` is a client-supplied query param and therefore not a security
-// control. Phase 1 replaces it with a verified JWT claim.
-type LegacyRole = "free" | "paid" | undefined;
-
-function applyPlan(todo: TodoItem, role: LegacyRole): TodoItem {
-  if (role !== "free") {
-    return todo;
-  }
-  const { notes: _notes, ...rest } = todo;
-  return rest;
-}
+import { CurrentUser } from "../auth/decorators/current-user.decorator";
+import { JwtPayload } from "../auth/auth.types";
 
 @Controller("todos")
 export class TodoController {
   constructor(private readonly todoService: TodoService) {}
 
   @Get()
-  async findAll(@Query("userRole") userRole: LegacyRole): Promise<TodoItem[]> {
-    const todos = await this.todoService.findAll();
-    return todos.map((todo) => applyPlan(todo, userRole));
+  async findAll(
+    @CurrentUser() user: JwtPayload,
+    @Query("cursor") cursor?: string,
+    @Query("limit") limit?: string,
+  ) {
+    return this.todoService.findAllCursor(
+      user.sub,
+      cursor,
+      limit ? Number(limit) : 20,
+    );
   }
 
   @Get(":id")
   async findOne(
     @Param("id") id: string,
-    @Query("userRole") userRole: LegacyRole,
-  ): Promise<TodoItem> {
-    return applyPlan(await this.todoService.findOne(id), userRole);
+    @CurrentUser() user: JwtPayload,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const todo = await this.todoService.findOne(user.sub, id, user.plan);
+    res.setHeader("ETag", `"${todo.version}"`);
+    return todo;
   }
 
   @Post()
   async create(
     @Body() dto: CreateTodoDto,
-    @Query("userRole") userRole: LegacyRole,
-  ): Promise<TodoItem> {
-    const created = await this.todoService.create({
-      title: dto.title,
-      completed: dto.completed ?? false,
-      time: dto.time,
-      notes: dto.notes,
-    });
-    return applyPlan(created, userRole);
+    @CurrentUser() user: JwtPayload,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { todo, idempotent } = await this.todoService.create(
+      user.sub,
+      dto,
+      user.plan,
+    );
+    res.setHeader("ETag", `"${todo.version}"`);
+    // Idempotent replay: existing todo already created, return 200.
+    // New create: @Post() defaults to 201.
+    if (idempotent) res.status(HttpStatus.OK);
+    return todo;
   }
 
   @Patch(":id")
   async update(
     @Param("id") id: string,
     @Body() dto: UpdateTodoDto,
-    @Query("userRole") userRole: LegacyRole,
-  ): Promise<TodoItem> {
-    return applyPlan(await this.todoService.update(id, dto), userRole);
+    @CurrentUser() user: JwtPayload,
+    @Headers("if-match") ifMatchHeader: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const ifMatch = ifMatchHeader
+      ? Number(ifMatchHeader.replace(/"/g, ""))
+      : undefined;
+
+    const todo = await this.todoService.update(
+      user.sub,
+      id,
+      dto,
+      ifMatch,
+      user.plan,
+    );
+    res.setHeader("ETag", `"${todo.version}"`);
+    return todo;
   }
 
   @Delete(":id")
   @HttpCode(HttpStatus.NO_CONTENT)
-  async remove(@Param("id") id: string): Promise<void> {
-    await this.todoService.delete(id);
+  async remove(
+    @Param("id") id: string,
+    @CurrentUser() user: JwtPayload,
+  ): Promise<void> {
+    await this.todoService.delete(user.sub, id);
   }
 }

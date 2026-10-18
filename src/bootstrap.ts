@@ -4,6 +4,7 @@ import {
   VersioningType,
 } from "@nestjs/common";
 import { HttpAdapterHost } from "@nestjs/core";
+import cookieParser from "cookie-parser";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
 import { readEnv } from "./config/env";
 
@@ -12,6 +13,7 @@ import { readEnv } from "./config/env";
 export function configureApp(app: INestApplication): INestApplication {
   const { corsOrigins } = readEnv();
 
+  app.use(cookieParser());
   app.setGlobalPrefix("api");
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
 

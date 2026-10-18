@@ -14,6 +14,7 @@ export interface ErrorBody {
   message: string | string[];
   path: string;
   timestamp: string;
+  [key: string]: unknown;
 }
 
 const STATUS_CODES: Record<number, string> = {
@@ -48,6 +49,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const body: ErrorBody = {
       statusCode: status,
+      ...this.resolveExtra(exception, status),
       code: this.resolveCode(exception, status),
       message: this.resolveMessage(exception, status),
       path: httpAdapter.getRequestUrl(request) as string,
@@ -62,6 +64,25 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     httpAdapter.reply(ctx.getResponse(), body, status);
+  }
+
+  private resolveExtra(
+    exception: unknown,
+    status: number,
+  ): Record<string, unknown> {
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) return {};
+    if (exception instanceof HttpException) {
+      const response = exception.getResponse();
+      if (typeof response === "object" && response !== null) {
+        const {
+          code: _c,
+          message: _m,
+          ...rest
+        } = response as Record<string, unknown>;
+        return rest;
+      }
+    }
+    return {};
   }
 
   private resolveCode(exception: unknown, status: number): string {
