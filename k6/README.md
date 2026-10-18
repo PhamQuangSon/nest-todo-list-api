@@ -227,6 +227,77 @@ percentiles stayed at ~11ms in both runs, pinned near the 10ms sampler
 resolution and swamped by idle samples. `eventLoopUtilization` moved cleanly
 from 0.06 to 0.20. Prefer ELU for "is this process CPU-bound".
 
+## Experiment 5 — payload size
+
+`LIST_SELECT` in `todo.service.ts` deliberately omits `notes`. This adds it back
+and measures the difference, with ~1 KB notes on every row (`NOTE_BODY` in
+`actions.js` writes realistic bodies for the same reason).
+
+| | notes excluded | notes included | |
+|---|---|---|---|
+| list response body | 3 155 B | **19 140 B** | **6.1x** |
+| data received (60s) | 120.2 MB | **581.9 MB** | 4.8x |
+| bandwidth | 1.88 MB/s | **9.14 MB/s** | 4.9x |
+| req/s | 715.4 | 718.8 | identical |
+| p99 | 3.2ms | 3.5ms | identical |
+
+**The cost is bandwidth, not latency** — and on loopback that is nearly free, so
+this measurement *understates* it badly. 9.14 MB/s is 73 Mbit/s: enough to
+saturate most of a 100 Mbit link, and a figure a mobile client feels directly.
+Sustained, 581.9 MB per minute is ~838 GB/day of egress, which on a cloud
+provider is a line item. All of it for a field the list view never renders.
+
+First attempt at this got 3 155 → 3 855 B and looked like nothing. The cause was
+the measurement, not the app: the list returns newest-first, and the create
+action was writing 24-byte placeholder notes, so the rows it had just inserted
+dominated every response and crowded out the 1 KB ones. Worth remembering that a
+load generator's test data shapes the result as much as the code does.
+
+## Experiment 7 — quota TOCTOU
+
+The naive quota is `SELECT count(*)`, decide, then `INSERT`. 50 VUs, no think
+time, one FREE user, limit 50, counting actual rows in Postgres afterwards:
+
+| concurrency | rows created (limit 50) | overshoot |
+|---|---|---|
+| 50 VUs | 53 | +3 |
+| 100 VUs | 55 | +5 |
+| 300 VUs | 56 | +6 |
+
+The quota is breached, and the overshoot grows with concurrency because it is
+bounded by how many requests sit between the `count` and the `INSERT` when the
+boundary is crossed. Each one reads the same under-limit value and proceeds.
+
+**A transaction alone does not fix this.** Under `READ COMMITTED` every
+concurrent transaction still sees the same pre-insert count. What fixes it is
+putting the precondition inside the write:
+
+```ts
+const { count } = await tx.user.updateMany({
+  where: { id: userId, todoCount: { lt: FREE_PLAN_TODO_QUOTA } },
+  data: { todoCount: { increment: 1 } },
+});
+if (count === 0) throw new ForbiddenException({ code: "QUOTA_EXCEEDED" });
+```
+
+Check and increment become one statement; concurrent callers serialise on the
+user row, so exactly `QUOTA` of them can win. The transaction is still needed —
+but for a different reason: to tie the counter bump to the INSERT so a failed
+insert does not permanently consume a slot. This is the only write in the
+service that needs one.
+
+| concurrency | naive | fixed |
+|---|---|---|
+| 50 VUs | 53 | **50** |
+| 100 VUs | 55 | **50** |
+| 300 VUs | 56 | **50** |
+
+Exact at every level, with `todoCount` matching the real row count. The
+migration backfills `todoCount` (it had sat at 0 since the init migration while
+users accumulated thousands of rows) and adds a `todoCount >= 0` CHECK. The
+ceiling deliberately is *not* a CHECK constraint: the limit depends on the
+user's plan, so no single constant is correct.
+
 ### nginx caches upstream DNS
 
 `upstream { server api:3000; }` resolves **once at startup**. After

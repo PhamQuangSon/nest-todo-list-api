@@ -107,6 +107,16 @@ const SCENARIOS = {
     maxVUs: 1500,
   },
 
+  // Experiment 7. All VUs hammer POST /todos as ONE user with no think time, to
+  // put maximum concurrency on that user's quota check. Short on purpose: the
+  // question is only whether the quota holds, not how fast it fails.
+  quota: {
+    executor: "constant-vus",
+    vus: Number(__ENV.QUOTA_VUS || 50),
+    duration: __ENV.QUOTA_DURATION || "10s",
+    exec: "quotaScenario",
+  },
+
   // Long run at moderate load. Looking for memory/connection leaks, not latency.
   soak: {
     executor: "constant-arrival-rate",

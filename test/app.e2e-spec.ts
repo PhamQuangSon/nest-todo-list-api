@@ -4,6 +4,7 @@ import request from "supertest";
 import { AppModule } from "./../src/app.module";
 import { configureApp } from "./../src/bootstrap";
 import { PrismaService } from "./../src/prisma/prisma.service";
+import { FREE_PLAN_TODO_QUOTA } from "./../src/todo/todo.service";
 
 // Shared app + token state — rebuilt once per suite for speed.
 let app: INestApplication;
@@ -272,6 +273,86 @@ describe("Todos — idempotency", () => {
       where: { clientRequestId: CLIENT_REQ_ID },
     });
     expect(count).toBe(1);
+  });
+});
+
+describe("Todos — FREE plan quota", () => {
+  // Drive todoCount to the limit directly rather than issuing 50 creates: the
+  // gate reads that counter, so this exercises the same code path in one step.
+  it("rejects a create once the counter is at the limit, and allows it again after a delete", async () => {
+    const quotaUser = {
+      email: "e2e-quota@test.invalid",
+      password: "TestPass123!",
+    };
+    await prisma.user.deleteMany({ where: { email: quotaUser.email } });
+    const { accessToken } = await register(quotaUser);
+
+    const seed = await request(app.getHttpServer())
+      .post("/api/v1/todos")
+      .auth(accessToken, { type: "bearer" })
+      .send({ title: "the one allowed todo" })
+      .expect(201);
+
+    await prisma.user.update({
+      where: { email: quotaUser.email },
+      data: { todoCount: FREE_PLAN_TODO_QUOTA },
+    });
+
+    const denied = await request(app.getHttpServer())
+      .post("/api/v1/todos")
+      .auth(accessToken, { type: "bearer" })
+      .send({ title: "over the limit" })
+      .expect(403);
+    expect(denied.body.code).toBe("QUOTA_EXCEEDED");
+    expect(denied.body.limit).toBe(FREE_PLAN_TODO_QUOTA);
+
+    // Deleting frees a slot, so the next create succeeds.
+    await request(app.getHttpServer())
+      .delete(`/api/v1/todos/${seed.body.id}`)
+      .auth(accessToken, { type: "bearer" })
+      .expect(204);
+
+    await request(app.getHttpServer())
+      .post("/api/v1/todos")
+      .auth(accessToken, { type: "bearer" })
+      .send({ title: "back under the limit" })
+      .expect(201);
+
+    await prisma.todo.deleteMany({
+      where: { user: { email: quotaUser.email } },
+    });
+    await prisma.user.deleteMany({ where: { email: quotaUser.email } });
+  });
+
+  it("does not apply the quota to a PAID user", async () => {
+    await prisma.user.update({
+      where: { email: ALICE.email },
+      data: { plan: "PAID", todoCount: FREE_PLAN_TODO_QUOTA * 10 },
+    });
+
+    // A fresh login is required, not just the DB change: `plan` is a JWT claim,
+    // so the token minted earlier still says FREE. That is the deliberate
+    // trade for making authorization cost zero database reads per request.
+    const upgraded = await request(app.getHttpServer())
+      .post("/api/v1/auth/login")
+      .send(ALICE)
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .post("/api/v1/todos")
+      .auth(upgraded.body.accessToken as string, { type: "bearer" })
+      .send({ title: "paid plan ignores the free quota" })
+      .expect(201);
+
+    // Restore both fields. Leaving todoCount inflated would make every later
+    // create in this file hit the quota.
+    const owned = await prisma.todo.count({
+      where: { user: { email: ALICE.email } },
+    });
+    await prisma.user.update({
+      where: { email: ALICE.email },
+      data: { plan: "FREE", todoCount: owned },
+    });
   });
 });
 

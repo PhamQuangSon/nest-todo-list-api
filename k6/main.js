@@ -10,8 +10,8 @@ import {
   EXPORT_RPS,
   BASE_URL,
 } from "./lib/config.js";
-import { mintUsers, mintPowerUserToken } from "./lib/setup.js";
-import { runWeightedAction } from "./lib/actions.js";
+import { mintUsers, mintPowerUserToken, mintQuotaUser } from "./lib/setup.js";
+import { runWeightedAction, quotaAccepted, quotaRejected } from "./lib/actions.js";
 
 // 412 Precondition Failed is a CORRECT response, not a failure: it means
 // optimistic concurrency refused to let one writer clobber another. Left in the
@@ -28,6 +28,14 @@ export const options = {
 };
 
 export function setup() {
+  // The quota scenario needs exactly one user with a known, reset row count —
+  // minting 50 and seeding 20 todos each would both waste time and pollute it.
+  if (SCENARIO_NAME === "quota") {
+    const token = mintQuotaUser();
+    console.log("setup done: quota user ready (todos cleared)");
+    return { users: [], powerToken: null, quotaToken: token };
+  }
+
   console.log(`scenario=${SCENARIO_NAME} minting ${NUM_USERS} users…`);
   const users = mintUsers();
   const powerToken = EXPORT_RPS > 0 ? mintPowerUserToken() : null;
@@ -60,4 +68,24 @@ export function exportScenario(data) {
     timeout: "120s",
   });
   check(res, { "export: 200": (r) => r.status === 200 });
+}
+
+// Experiment 7. No think time, one user, every VU racing the same quota check.
+// Counts accepted vs rejected; the verdict comes from the row count in Postgres
+// afterwards, not from anything k6 can see.
+export function quotaScenario(data) {
+  const res = http.post(
+    `${BASE_URL}/todos`,
+    JSON.stringify({ title: `quota probe ${__VU}-${__ITER}` }),
+    {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${data.quotaToken}`,
+      },
+      tags: { name: "POST /todos (quota)" },
+    },
+  );
+
+  if (res.status === 201) quotaAccepted.add(1);
+  else if (res.status === 403) quotaRejected.add(1);
 }

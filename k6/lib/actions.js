@@ -22,6 +22,10 @@ export const conflictRate = new Rate("version_conflict_rate");
 // select) moves this number, and throughput follows it.
 export const listBytes = new Trend("list_response_bytes");
 
+// Experiment 7. 403 is the quota working; 201 past the limit is the bug.
+export const quotaAccepted = new Counter("quota_accepted");
+export const quotaRejected = new Counter("quota_rejected");
+
 function authHeaders(token) {
   return {
     "Content-Type": "application/json",
@@ -122,12 +126,17 @@ function patchTodo(user) {
   return res;
 }
 
+// ~1KB, the size of a note someone actually types. Short placeholder text here
+// would quietly invalidate experiment 5: the list returns newest-first, so rows
+// this action creates dominate what GET /todos serves.
+const NOTE_BODY = "realistic note body for this task. ".repeat(30);
+
 function createTodo(user) {
   const res = http.post(
     `${BASE_URL}/todos`,
     JSON.stringify({
       title: `k6 created ${__VU}-${__ITER}`,
-      notes: "created during load test",
+      notes: NOTE_BODY,
     }),
     { headers: authHeaders(user.t), tags: { name: "POST /todos" } },
   );

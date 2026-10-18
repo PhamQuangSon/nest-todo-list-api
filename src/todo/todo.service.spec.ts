@@ -1,7 +1,11 @@
 import { Test, TestingModule } from "@nestjs/testing";
-import { NotFoundException, PreconditionFailedException } from "@nestjs/common";
+import {
+  ForbiddenException,
+  NotFoundException,
+  PreconditionFailedException,
+} from "@nestjs/common";
 import { Plan, Prisma } from "@prisma/client";
-import { TodoService } from "./todo.service";
+import { FREE_PLAN_TODO_QUOTA, TodoService } from "./todo.service";
 import { PrismaService } from "../prisma/prisma.service";
 
 const USER_ID = "01a00000-0000-7000-8000-000000000001";
@@ -18,7 +22,7 @@ const fakeTodo = {
 };
 
 function makePrismaMock() {
-  return {
+  const mock: Record<string, any> = {
     todo: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
@@ -28,7 +32,22 @@ function makePrismaMock() {
       updateMany: jest.fn(),
       delete: jest.fn(),
     },
+    user: {
+      // Quota gate: a non-zero count means a slot was claimed.
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      update: jest.fn(),
+    },
   };
+
+  // Interactive form runs the callback against this same mock; array form just
+  // resolves. Enough to exercise the service's control flow.
+  mock.$transaction = jest.fn((arg: unknown) =>
+    typeof arg === "function"
+      ? (arg as (tx: unknown) => unknown)(mock)
+      : Promise.resolve(arg),
+  );
+
+  return mock;
 }
 
 describe("TodoService", () => {
@@ -111,6 +130,32 @@ describe("TodoService", () => {
       await expect(
         service.create(USER_ID, { title: "no key" }, Plan.FREE),
       ).rejects.toBeInstanceOf(Prisma.PrismaClientKnownRequestError);
+    });
+  });
+
+  describe("create — quota", () => {
+    it("rejects a FREE user whose quota is already full", async () => {
+      // updateMany matched no row: the WHERE clause's todoCount < QUOTA
+      // precondition failed, which is how the atomic check reports "full".
+      prismaMock.user.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.create(USER_ID, { title: "over quota" }, Plan.FREE),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(prismaMock.todo.create).not.toHaveBeenCalled();
+    });
+
+    it("applies the quota precondition for FREE but not for PAID", async () => {
+      prismaMock.todo.create.mockResolvedValue(fakeTodo);
+
+      await service.create(USER_ID, { title: "free" }, Plan.FREE);
+      const freeWhere = prismaMock.user.updateMany.mock.calls[0][0].where;
+      expect(freeWhere.todoCount).toEqual({ lt: FREE_PLAN_TODO_QUOTA });
+
+      await service.create(USER_ID, { title: "paid" }, Plan.PAID);
+      const paidWhere = prismaMock.user.updateMany.mock.calls[1][0].where;
+      expect(paidWhere.todoCount).toBeUndefined();
     });
   });
 

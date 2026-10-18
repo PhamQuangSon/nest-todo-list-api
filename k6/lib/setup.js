@@ -37,6 +37,53 @@ export function mintPowerUserToken() {
   return res.json("accessToken");
 }
 
+// Experiment 7: one user, on the FREE plan, with zero todos so the quota is
+// exercised from a known starting point. Existing rows are deleted through the
+// API so the run is repeatable without touching the database directly.
+export const QUOTA_USER_EMAIL = `k6-quota${USER_EMAIL_DOMAIN}`;
+
+export function mintQuotaUser() {
+  const body = JSON.stringify({
+    email: QUOTA_USER_EMAIL,
+    password: USER_PASSWORD,
+  });
+
+  let res = http.post(`${BASE_URL}/auth/register`, body, {
+    headers: JSON_HEADERS,
+    tags: { name: "setup:register" },
+  });
+  if (res.status === 409) {
+    res = http.post(`${BASE_URL}/auth/login`, body, {
+      headers: JSON_HEADERS,
+      tags: { name: "setup:login" },
+    });
+  }
+  if (res.status !== 201 && res.status !== 200) {
+    throw new Error(`setup: quota user auth failed — ${res.status} ${res.body}`);
+  }
+
+  const token = res.json("accessToken");
+  const headers = { ...JSON_HEADERS, Authorization: `Bearer ${token}` };
+
+  // Drain whatever a previous run left behind.
+  for (;;) {
+    const list = http.get(`${BASE_URL}/todos?limit=100`, {
+      headers,
+      tags: { name: "setup:drain" },
+    });
+    const items = list.json("items");
+    if (!items || items.length === 0) break;
+    for (const t of items) {
+      http.del(`${BASE_URL}/todos/${t.id}`, null, {
+        headers,
+        tags: { name: "setup:drain" },
+      });
+    }
+  }
+
+  return token;
+}
+
 export function mintUsers() {
   const users = [];
 

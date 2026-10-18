@@ -41,12 +41,16 @@ export default tseslint.config(
     },
   },
   {
-    // supertest types body and getHttpServer() as `any`; turn off noise in tests.
-    files: ['test/**/*.ts'],
+    // Test doubles are loosely typed by nature: supertest types `body` and
+    // getHttpServer() as `any`, and a hand-rolled Prisma mock cannot satisfy
+    // the real client's type without reimplementing it.
+    files: ['test/**/*.ts', 'src/**/*.spec.ts'],
     rules: {
       '@typescript-eslint/no-unsafe-member-access': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
     },
   },
 );

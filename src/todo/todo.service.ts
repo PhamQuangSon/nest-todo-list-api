@@ -1,4 +1,5 @@
 import {
+  ForbiddenException,
   Injectable,
   NotFoundException,
   PreconditionFailedException,
@@ -18,6 +19,8 @@ const LIST_SELECT = {
   version: true,
   createdAt: true,
 } as const;
+
+export const FREE_PLAN_TODO_QUOTA = 50;
 
 type ListTodo = Prisma.TodoGetPayload<{ select: typeof LIST_SELECT }>;
 
@@ -76,17 +79,51 @@ export class TodoService {
     plan: Plan,
   ): Promise<CreateResult> {
     try {
-      const todo = await this.prisma.todo.create({
-        data: {
-          userId,
-          title: dto.title,
-          completed: dto.completed ?? false,
-          time: dto.time,
-          notes: dto.notes,
-          clientRequestId: dto.clientRequestId,
-        },
-        select: { ...LIST_SELECT, notes: plan === Plan.PAID },
+      // The one write in this service that genuinely needs a transaction.
+      // Everywhere else a single conditional statement does the job; here the
+      // counter bump and the INSERT must succeed or fail together, or a failed
+      // insert would permanently consume a slot.
+      const todo = await this.prisma.$transaction(async (tx) => {
+        // Check and increment in ONE statement, with the precondition inside
+        // the WHERE clause. updateMany returns the number of rows it matched,
+        // so `count === 0` means "already at the limit" — and concurrent
+        // callers serialise on the user row, so exactly QUOTA of them can win.
+        //
+        // The naive version (SELECT count(*), then decide, then INSERT) is what
+        // experiment 7 measures: with a gap between read and write, every
+        // request in flight at the boundary reads the same under-limit value
+        // and proceeds. A transaction alone does not fix it — under
+        // READ COMMITTED they all still see the same pre-insert count.
+        const { count } = await tx.user.updateMany({
+          where: {
+            id: userId,
+            ...(plan === Plan.FREE
+              ? { todoCount: { lt: FREE_PLAN_TODO_QUOTA } }
+              : {}),
+          },
+          data: { todoCount: { increment: 1 } },
+        });
+
+        if (count === 0) {
+          throw new ForbiddenException({
+            code: "QUOTA_EXCEEDED",
+            limit: FREE_PLAN_TODO_QUOTA,
+          });
+        }
+
+        return tx.todo.create({
+          data: {
+            userId,
+            title: dto.title,
+            completed: dto.completed ?? false,
+            time: dto.time,
+            notes: dto.notes,
+            clientRequestId: dto.clientRequestId,
+          },
+          select: { ...LIST_SELECT, notes: plan === Plan.PAID },
+        });
       });
+
       return { todo: todo, idempotent: false };
     } catch (e) {
       // Unique constraint on (userId, clientRequestId) → idempotent replay.
@@ -217,7 +254,16 @@ export class TodoService {
     if (!existing || existing.userId !== userId) {
       throw new NotFoundException({ code: "NOT_FOUND" });
     }
-    await this.prisma.todo.delete({ where: { id } });
+
+    // Counter and row move together, or a failed delete would hand back a
+    // quota slot that is still occupied.
+    await this.prisma.$transaction([
+      this.prisma.todo.delete({ where: { id } }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { todoCount: { decrement: 1 } },
+      }),
+    ]);
   }
 }
 
