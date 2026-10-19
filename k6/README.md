@@ -24,6 +24,17 @@ node k6/compare.mjs k6/baselines/a.json k6/baselines/b.json
 
 Scenarios: `smoke`, `load`, `stress`, `spike`, `soak`, `closed`. One per run.
 
+**Since Phase 3 the API is rate limited.** 50 synthetic users generating
+hundreds of rps each are far over any per-user limit, and setup's 50 logins
+from one IP exceed the per-IP auth limit. Start the stack with the limits
+scaled up before running any scenario above:
+
+```bash
+THROTTLE_SCALE=1000 docker compose up -d --scale api=3 && docker compose restart nginx
+```
+
+Use `THROTTLE_SCALE=1` (the default) only for `k6/ratelimit.js`.
+
 ## Two things this harness does that most do not
 
 **It refuses to measure itself.** `dropped_iterations` is a threshold
@@ -338,3 +349,176 @@ user's plan, so no single constant is correct.
 `--scale api=N` nginx still balances across the IPs it knew then, so a scale-up
 appears to do nothing. `docker compose restart nginx` after every scale change,
 or the measurement is silently wrong.
+
+---
+
+# Phase 3 — shared state in Redis
+
+Rate limiting, a failed-login counter and a per-user list cache, all in one
+Redis that every replica shares. Same rule as Phase 2: measure it broken first.
+
+## A. The rate limiter, in memory vs Redis
+
+`k6/ratelimit.js`: one FREE user (limit 60/min), steady 5 rps for 50s — under
+the 20/s burst limit, inside one minute window. The right answer is 60.
+
+| storage | 1 replica | 3 replicas |
+|---|---|---|
+| in-memory (library default) | 60 | **180** |
+| Redis | — | **60** |
+
+Exactly 3x: each replica counts on its own, and round-robin hands it a third of
+the user's traffic. Nothing errors and nothing logs — the limit simply stops
+meaning what it says the moment you scale.
+
+Two library defaults that would have quietly broken it further:
+
+- **The default key includes the controller and handler name**, i.e. a separate
+  counter per route. "60/min per user" becomes 60/min per user *per endpoint*.
+  Overridden with `generateKey: (_, tracker, name) => name + ":" + tracker`.
+- **Bare `@SkipThrottle()` skips only a throttler literally named `default`.**
+  With named throttlers it skips nothing. `/metrics` was decorated with it and
+  every Prometheus scrape got 429 — all three targets down, dashboard blind,
+  found only because a Redis key turned up under Prometheus's IP.
+  `SkipAllThrottles()` derives the list from `THROTTLER_NAMES`.
+
+## B. Who is the client? X-Forwarded-For
+
+nginx shipped with `real_ip_header X-Forwarded-For; set_real_ip_from 0.0.0.0/0;`
+— trust the header from anyone. 30 anonymous auth requests against a 20/min
+per-IP limit, each with a random `X-Forwarded-For`:
+
+| | passed | limited |
+|---|---|---|
+| old nginx config | **30** | 0 |
+| fixed | **20** | 10 |
+
+nginx is the edge: clients connect to it directly, so `$remote_addr` is the only
+address it can vouch for. It now overwrites `X-Forwarded-For` with it (not
+`$proxy_add_x_forwarded_for`, which *appends* to what the client sent), and the
+app trusts exactly one hop (`TRUST_PROXY_HOPS=1`). Too few hops is the opposite
+failure: every user appears as nginx and shares one bucket, so one abuser locks
+out everyone.
+
+The first attempt at this measurement reported 30/30 passing *after* the fix
+too. The app was fine; the shell script was not — under zsh, `[ "$code" = 429 ]`
+triggers `=` expansion and never matches. The raw status codes told the truth.
+Check the measuring instrument before believing either result.
+
+## C. Kill Redis mid-load
+
+600 rps across 3 replicas, `docker compose stop redis` for 20 seconds, then
+start it again:
+
+| | |
+|---|---|
+| failed requests caused by the outage | **0** (k6 reported 0.08% — exactly the 50 setup 409s, before that was fixed) |
+| p99 | 55ms → 92ms during the outage and reconnect |
+| replicas restarted | 0 |
+| rate-limit checks failed open, one replica | 10 265 (counted) |
+
+Each subsystem's degradation was decided deliberately:
+
+| Redis down → | behaviour | why |
+|---|---|---|
+| rate limiter | **fail open** | a limiter exists to keep the API up; it must not be what takes it down |
+| failed-login limit | fail open | same; lockouts resume when Redis returns |
+| list cache | read Postgres | slower, never an error |
+
+Failing open is only safe if it is loud. Every degraded operation increments
+`app_degraded_total{subsystem}`, on the dashboard's row 4 — the user-visible
+symptom of fail-open is precisely that nothing looks wrong.
+
+Making this work needed `enableOfflineQueue: false`. ioredis's default queues
+commands while disconnected and replays them on reconnect: correct for a job
+queue, catastrophic here — a Redis outage would make every request *hang*.
+Off, a command on a dead connection rejects instantly and the caller degrades.
+The flip side surfaced in the e2e suite: commands sent before the first
+connection completes also reject, so the first requests after boot skipped the
+limiter. Startup now waits up to 2s for Redis — and boots degraded rather than
+refusing to start if it never comes.
+
+## D. Failed logins per account
+
+10 failures per hour per email, shared across replicas, checked **before**
+argon2 runs — a locked account cannot be used to burn the 4-thread libuv pool.
+The window starts at the first failure (`EXPIRE NX`), so a slow trickle of
+guesses cannot keep an owner locked out forever. Keys are sha256 of the
+normalised email: Redis never holds a list of addresses.
+
+What it does and does not stop: one account guessed from many IPs, which the
+per-IP limit cannot catch. It does **not** stop credential stuffing — one try
+per leaked pair across thousands of accounts — which needs breached-password
+checks. And anyone who knows an email can lock it for an hour; the usual
+escalation is a CAPTCHA or emailed unlock link instead of a hard block.
+
+## E. The list cache: did it help?
+
+Per-user keys embedding a generation number,
+`v1:u:<userId>:g<gen>:todos:l<limit>:c<cursor>`. A write does one `INCR` on the
+generation, which orphans every cursor/limit variant at once; no `SCAN`.
+There is no method that builds a key without a userId, so the Phase 0
+cross-tenant leak cannot be rebuilt through it.
+
+Ordering is the correctness argument: readers fetch the generation *before*
+querying Postgres; writers bump it *after* committing. A racing reader either
+caches under a generation nobody will read again, or read after the commit.
+
+Postgres load, from one run (each hit replaced exactly one query, so the
+uncached count is exact rather than a second noisy run):
+
+| | |
+|---|---|
+| hit rate | **67.5%** |
+| Postgres queries per HTTP request | 1.23 → **0.76** |
+| Postgres queries removed | **38.7%** |
+
+Latency, measured inside an api container where host networking cannot add
+noise:
+
+| path | p50 |
+|---|---|
+| Postgres `findMany`, no cache | 0.27ms |
+| cache hit (2 Redis GETs + `JSON.parse`) | **0.11ms** |
+| cache miss (2 Redis GETs + `findMany`) | 0.37ms |
+
+At 67.5% hits the expected cost is ~0.19ms against 0.27ms — a real saving of
+~0.08ms per list request, invisible at the k6 level. **Break-even is a ~38% hit
+rate**: below it the cache makes every request slower, because a miss pays for
+the lookup *and* the query. A cache is not automatically an optimisation.
+
+So the honest verdict: here it buys 39% less Postgres load and almost no
+latency, because Phase 2 already showed Postgres is not the bottleneck. It
+earns its keep when the database is. k6 users also write every ~5 actions;
+people write far less, so a real hit rate would be higher.
+
+The query string is now validated (`ListTodosQuery`). It is part of the cache
+key, and was unvalidated: a malformed cursor reached Postgres and returned
+**500**, `limit=abc` returned 500, and `limit=-5` silently read backwards.
+
+## F. The environment got noisy, and how to tell
+
+Rerunning the Phase 2 code unchanged in today's environment (built from
+`1e468f0` as a control) gave p99 79ms and 159ms on back-to-back runs, against
+3.2ms when it was recorded. The machine now shares its Docker VM with Immich and
+n8n, and the host runs Chrome. One rate-limiter run matched the control; the
+next showed 5.8% failures and a 3.7s p99.
+
+None of those failures reached the server: nginx logged no 5xx at all. The API
+did log Redis commands timing out at 200ms — commands Redis executes in 9µs.
+That only happens when the whole VM stops being scheduled. The fail-open path
+served those requests correctly, which is the one thing that run did prove.
+
+Lessons for every number above: compare only runs taken side by side; rerun a
+control when the environment may have changed; and for sub-millisecond
+questions, measure the operation itself rather than end-to-end latency on a
+shared laptop.
+
+## Not done
+
+- Per-user sustained/burst limits have no e2e test of their own (the 1s burst
+  window makes it timing-dependent); `k6/ratelimit.js` covers them across
+  replicas.
+- `/register` still answers `EMAIL_TAKEN`, which confirms an account exists. Any
+  timing-based fix to login is moot until registration stops doing that, which
+  needs an email-verification flow.

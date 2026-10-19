@@ -69,6 +69,13 @@ beforeAll(async () => {
   bobToken = bob.accessToken;
 });
 
+// Every test starts from empty Redis: no rate-limit counters and no cached
+// lists carried over. Without it the suite, which drives one user far faster
+// than any person could, trips that user's own 20/s burst limit.
+beforeEach(async () => {
+  await redis.flushdb();
+});
+
 afterAll(async () => {
   // Clean up test data then close.
   await prisma.session.deleteMany({
@@ -215,6 +222,71 @@ describe("Todos — CRUD", () => {
       .auth(aliceToken, { type: "bearer" })
       .send({ title: "big", notes: "x".repeat(10_001) })
       .expect(400);
+  });
+});
+
+describe("Todos — list cache", () => {
+  // The list is cached per user; a write must make the next read fresh. Read
+  // first so the cache is populated, then write, then read again.
+  it("a create is visible in the very next list, despite the cache", async () => {
+    await request(app.getHttpServer())
+      .get("/api/v1/todos")
+      .auth(aliceToken, { type: "bearer" })
+      .expect(200);
+
+    const created = await request(app.getHttpServer())
+      .post("/api/v1/todos")
+      .auth(aliceToken, { type: "bearer" })
+      .send({ title: "must not be hidden by a cached list" })
+      .expect(201);
+
+    const after = await request(app.getHttpServer())
+      .get("/api/v1/todos")
+      .auth(aliceToken, { type: "bearer" })
+      .expect(200);
+    const ids = (after.body.items as Array<{ id: string }>).map((t) => t.id);
+    expect(ids).toContain(created.body.id);
+  });
+
+  it("an update is visible in the very next list", async () => {
+    const created = await request(app.getHttpServer())
+      .post("/api/v1/todos")
+      .auth(aliceToken, { type: "bearer" })
+      .send({ title: "before" })
+      .expect(201);
+    await request(app.getHttpServer())
+      .get("/api/v1/todos")
+      .auth(aliceToken, { type: "bearer" })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/todos/${created.body.id}`)
+      .auth(aliceToken, { type: "bearer" })
+      .send({ title: "after" })
+      .expect(200);
+
+    const after = await request(app.getHttpServer())
+      .get("/api/v1/todos")
+      .auth(aliceToken, { type: "bearer" })
+      .expect(200);
+    const row = (after.body.items as Array<{ id: string; title: string }>).find(
+      (t) => t.id === created.body.id,
+    );
+    expect(row?.title).toBe("after");
+  });
+
+  it("rejects a malformed cursor or limit with 400, not 500", async () => {
+    for (const q of [
+      "cursor=not-a-uuid",
+      "limit=abc",
+      "limit=-5",
+      "limit=1000",
+    ]) {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/todos?${q}`)
+        .auth(aliceToken, { type: "bearer" });
+      expect([q, res.status]).toEqual([q, 400]);
+    }
   });
 });
 

@@ -1,28 +1,52 @@
 {
   "uid": "phase2-diagnosis",
-  "title": "Phase 2 — diagnosis order",
+  "title": "Diagnosis order (Phase 2-3)",
   "description": "Panels are ordered as the diagnostic procedure, top to bottom: is it Node or the DB, is Node CPU-bound or waiting, and is the pool queueing before you blame the database.",
-  "tags": ["phase2", "load-testing"],
+  "tags": [
+    "phase2",
+    "load-testing"
+  ],
   "timezone": "browser",
   "editable": true,
   "schemaVersion": 39,
   "refresh": "5s",
-  "time": { "from": "now-15m", "to": "now" },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
   "panels": [
     {
       "type": "row",
       "title": "1. Node or DB? Compare request rate against query rate",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "collapsed": false
     },
     {
       "type": "timeseries",
       "title": "Prisma queries/sec per instance",
       "description": "If this scales with load while latency climbs, time is going to the database. Flat here with rising latency points at Node.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } },
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
         "overrides": []
       },
       "targets": [
@@ -36,11 +60,24 @@
     {
       "type": "timeseries",
       "title": "Datasource queries/sec per instance",
-      "description": "Datasource queries exceed client queries when one Prisma call fans out to several SQL statements — transactions, or relation loads.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "description": "Datasource queries exceed client queries when one Prisma call fans out to several SQL statements \u2014 transactions, or relation loads.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } },
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
         "overrides": []
       },
       "targets": [
@@ -54,27 +91,51 @@
     {
       "type": "row",
       "title": "2. CPU-bound or waiting? ELU is the signal",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
       "collapsed": false
     },
     {
       "type": "timeseries",
       "title": "Event loop utilization (ELU)",
       "description": "Above 0.9 the process is CPU-bound and no index will help. Low ELU with high latency means it is waiting on something. Experiment 6 moved this from 0.06 to 0.20 with a single blocking export per second.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 10 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 10
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "min": 0,
           "max": 1,
-          "custom": { "fillOpacity": 15 },
+          "custom": {
+            "fillOpacity": 15
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 0.7 },
-              { "color": "red", "value": 0.9 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.7
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
             ]
           }
         },
@@ -92,10 +153,23 @@
       "type": "timeseries",
       "title": "Event loop delay (p99)",
       "description": "Queueing delay, not work. Pinned near the 10ms sampler resolution at low load, so prefer ELU for 'is this CPU-bound'.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 10 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 10
+      },
       "fieldConfig": {
-        "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } },
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
         "overrides": []
       },
       "targets": [
@@ -109,25 +183,46 @@
     {
       "type": "row",
       "title": "3. Check the pool BEFORE blaming the database",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
       "collapsed": false
     },
     {
       "type": "timeseries",
       "title": "Queries waiting for a connection",
-      "description": "The single most misdiagnosed signal here. Above zero means the queries are fine and requests are queueing for a CONNECTION — resize the pool, do not add an index. At zero, pool tuning cannot help you.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 20 },
+      "description": "The single most misdiagnosed signal here. Above zero means the queries are fine and requests are queueing for a CONNECTION \u2014 resize the pool, do not add an index. At zero, pool tuning cannot help you.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 20
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "min": 0,
-          "custom": { "fillOpacity": 20 },
+          "custom": {
+            "fillOpacity": 20
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         },
@@ -145,10 +240,24 @@
       "type": "timeseries",
       "title": "Pool connections: busy vs open",
       "description": "Experiment 3: busy sat at 1 of 2 and 0 of 25. Connections that are open but never busy add no capacity, only idle Postgres backends against max_connections.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 20 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 20
+      },
       "fieldConfig": {
-        "defaults": { "unit": "short", "min": 0, "custom": { "fillOpacity": 10 } },
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
         "overrides": []
       },
       "targets": [
@@ -168,10 +277,23 @@
       "type": "timeseries",
       "title": "Process memory (RSS)",
       "description": "For the soak scenario: load-proportional growth that settles is buffering, a straight line that never comes down is a leak.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 20 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 20
+      },
       "fieldConfig": {
-        "defaults": { "unit": "bytes", "custom": { "fillOpacity": 10 } },
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
         "overrides": []
       },
       "targets": [
@@ -184,6 +306,108 @@
           "expr": "nodejs_memory_bytes{kind=\"heap_used\"}",
           "legendFormat": "{{instance}} heap",
           "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "4. Shared state: is anything silently degraded?",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Degraded operations/sec (fail-open, cache bypass)",
+      "description": "Non-zero means Redis is unreachable and a subsystem chose to degrade rather than fail: the rate limiter is letting everything through, or lists are being served from Postgres. Users see nothing wrong, which is why this panel exists. Alert on any non-zero value.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "fillOpacity": 20
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (subsystem) (rate(app_degraded_total[30s]))",
+          "legendFormat": "{{subsystem}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "List cache hit ratio",
+      "description": "Measured break-even is ~38%: a hit costs 0.11ms, a miss 0.37ms (Redis lookups plus the query), the uncached query 0.27ms. Below that line the cache is making requests slower.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "fillOpacity": 15
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.38
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(app_cache_requests_total{result=\"hit\"}[1m])) / sum(rate(app_cache_requests_total[1m]))",
+          "legendFormat": "hit ratio",
+          "refId": "A"
         }
       ]
     }

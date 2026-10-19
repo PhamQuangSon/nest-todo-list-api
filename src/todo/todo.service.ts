@@ -8,6 +8,7 @@ import { Plan, Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateTodoDto } from "./dto/create-todo.dto";
 import { UpdateTodoDto } from "./dto/update-todo.dto";
+import { UserCache } from "../cache/user-cache";
 
 // Fields selected for list responses (notes excluded — large TEXT column).
 // Paid users fetch notes individually when they open a todo.
@@ -22,6 +23,10 @@ const LIST_SELECT = {
 
 export const FREE_PLAN_TODO_QUOTA = 50;
 
+// Upper bound on staleness if an invalidation is lost (Redis unreachable at
+// write time). Generation bumps make normal invalidation immediate.
+const LIST_CACHE_TTL_SECONDS = 30;
+
 type ListTodo = Prisma.TodoGetPayload<{ select: typeof LIST_SELECT }>;
 
 export type DetailTodo = ListTodo & { notes: string | null };
@@ -29,7 +34,10 @@ export type CreateResult = { todo: DetailTodo; idempotent: boolean };
 
 @Injectable()
 export class TodoService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: UserCache,
+  ) {}
 
   async findAll(userId: string): Promise<ListTodo[]> {
     return this.prisma.todo.findMany({
@@ -46,19 +54,27 @@ export class TodoService {
     limit = 20,
   ): Promise<{ items: ListTodo[]; nextCursor: string | null }> {
     const take = Math.min(limit, 100);
-    const items = await this.prisma.todo.findMany({
-      where: { userId, ...(cursor ? { id: { lt: cursor } } : {}) },
-      select: LIST_SELECT,
-      orderBy: { id: "desc" },
-      take: take + 1,
-    });
 
-    const hasMore = items.length > take;
-    if (hasMore) items.pop();
-    return {
-      items,
-      nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null,
-    };
+    return this.cache.getOrLoad(
+      userId,
+      `todos:l${take}:c${cursor ?? "head"}`,
+      LIST_CACHE_TTL_SECONDS,
+      async () => {
+        const items = await this.prisma.todo.findMany({
+          where: { userId, ...(cursor ? { id: { lt: cursor } } : {}) },
+          select: LIST_SELECT,
+          orderBy: { id: "desc" },
+          take: take + 1,
+        });
+
+        const hasMore = items.length > take;
+        if (hasMore) items.pop();
+        return {
+          items,
+          nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null,
+        };
+      },
+    );
   }
 
   async findOne(userId: string, id: string, plan: Plan): Promise<DetailTodo> {
@@ -124,6 +140,9 @@ export class TodoService {
         });
       });
 
+      // After the transaction committed. An idempotent replay below changed
+      // nothing, so it needs no invalidation.
+      await this.cache.invalidate(userId);
       return { todo: todo, idempotent: false };
     } catch (e) {
       // Unique constraint on (userId, clientRequestId) → idempotent replay.
@@ -203,6 +222,9 @@ export class TodoService {
       });
     }
 
+    // After the write committed — see the ordering note on UserCache.
+    await this.cache.invalidate(userId);
+
     const updated = await this.prisma.todo.findUniqueOrThrow({
       where: { id },
       select: { ...LIST_SELECT, notes: plan === Plan.PAID },
@@ -264,6 +286,7 @@ export class TodoService {
         data: { todoCount: { decrement: 1 } },
       }),
     ]);
+    await this.cache.invalidate(userId);
   }
 }
 

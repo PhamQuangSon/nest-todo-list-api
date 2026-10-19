@@ -17,6 +17,7 @@ import type { Response } from "express";
 import { TodoService } from "./todo.service";
 import { CreateTodoDto } from "./dto/create-todo.dto";
 import { UpdateTodoDto } from "./dto/update-todo.dto";
+import { ListTodosQuery } from "./dto/list-todos.query";
 import { CurrentUser } from "../auth/decorators/current-user.decorator";
 import { JwtPayload } from "../auth/auth.types";
 
@@ -27,13 +28,12 @@ export class TodoController {
   @Get()
   async findAll(
     @CurrentUser() user: JwtPayload,
-    @Query("cursor") cursor?: string,
-    @Query("limit") limit?: string,
+    @Query() query: ListTodosQuery,
   ) {
     return this.todoService.findAllCursor(
       user.sub,
-      cursor,
-      limit ? Number(limit) : 20,
+      query.cursor,
+      query.limit ?? 20,
     );
   }
 

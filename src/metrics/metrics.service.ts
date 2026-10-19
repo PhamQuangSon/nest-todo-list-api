@@ -5,6 +5,7 @@ import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 import type { EventLoopUtilization } from "node:perf_hooks";
 import { PrismaService } from "../prisma/prisma.service";
 import { degradation } from "./degradation";
+import { cacheStats } from "../cache/user-cache";
 
 const INSTANCE = hostname();
 
@@ -74,6 +75,13 @@ export class MetricsService implements OnModuleInit {
       `app_degraded_total{instance="${INSTANCE}",subsystem="rate_limiter"} ${degradation.rateLimiterFailOpen}`,
       `app_degraded_total{instance="${INSTANCE}",subsystem="login_guard"} ${degradation.loginGuardFailOpen}`,
       `app_degraded_total{instance="${INSTANCE}",subsystem="cache"} ${degradation.cacheBypass}`,
+    );
+
+    lines.push(
+      "# HELP app_cache_requests_total List cache lookups by outcome",
+      "# TYPE app_cache_requests_total counter",
+      `app_cache_requests_total{instance="${INSTANCE}",result="hit"} ${cacheStats.hits}`,
+      `app_cache_requests_total{instance="${INSTANCE}",result="miss"} ${cacheStats.misses}`,
     );
 
     // ── Prisma pool ──────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import { validateEnv } from "./config/env";
 import { ThrottleModule } from "./throttle/throttle.module";
 import { AppThrottlerGuard } from "./throttle/app-throttler.guard";
 import { RedisModule } from "./redis/redis.module";
+import { UserCacheModule } from "./cache/user-cache";
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { RedisModule } from "./redis/redis.module";
     }),
     PrismaModule,
     RedisModule,
+    UserCacheModule,
     AuthModule,
     TodoModule,
     MetricsModule,

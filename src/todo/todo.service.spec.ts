@@ -7,6 +7,7 @@ import {
 import { Plan, Prisma } from "@prisma/client";
 import { FREE_PLAN_TODO_QUOTA, TodoService } from "./todo.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { UserCache } from "../cache/user-cache";
 
 const USER_ID = "01a00000-0000-7000-8000-000000000001";
 const TODO_ID = "01a00000-0000-7000-8000-000000000002";
@@ -61,6 +62,19 @@ describe("TodoService", () => {
       providers: [
         TodoService,
         { provide: PrismaService, useValue: prismaMock },
+        // Pass-through: these tests exercise query logic, not caching.
+        {
+          provide: UserCache,
+          useValue: {
+            getOrLoad: (
+              _u: string,
+              _v: string,
+              _t: number,
+              load: () => unknown,
+            ) => load(),
+            invalidate: jest.fn(),
+          },
+        },
       ],
     }).compile();
 
