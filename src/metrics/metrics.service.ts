@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 import type { EventLoopUtilization } from "node:perf_hooks";
 import { PrismaService } from "../prisma/prisma.service";
+import { degradation } from "./degradation";
 
 const INSTANCE = hostname();
 
@@ -62,6 +63,17 @@ export class MetricsService implements OnModuleInit {
       `nodejs_memory_bytes{instance="${INSTANCE}",kind="rss"} ${mem.rss}`,
       `nodejs_memory_bytes{instance="${INSTANCE}",kind="heap_used"} ${mem.heapUsed}`,
       `nodejs_memory_bytes{instance="${INSTANCE}",kind="external"} ${mem.external}`,
+    );
+
+    // ── Degradation ──────────────────────────────────────────────────────────
+    // Fail-open decisions are invisible to users by design, so this is the
+    // only place they show up. Alert on any increase.
+    lines.push(
+      "# HELP app_degraded_total Times a subsystem degraded instead of failing",
+      "# TYPE app_degraded_total counter",
+      `app_degraded_total{instance="${INSTANCE}",subsystem="rate_limiter"} ${degradation.rateLimiterFailOpen}`,
+      `app_degraded_total{instance="${INSTANCE}",subsystem="login_guard"} ${degradation.loginGuardFailOpen}`,
+      `app_degraded_total{instance="${INSTANCE}",subsystem="cache"} ${degradation.cacheBypass}`,
     );
 
     // ── Prisma pool ──────────────────────────────────────────────────────────

@@ -51,6 +51,10 @@ export function mintQuotaUser() {
   let res = http.post(`${BASE_URL}/auth/register`, body, {
     headers: JSON_HEADERS,
     tags: { name: "setup:register" },
+      // 409 = already registered by an earlier run, the expected case on reruns.
+      // Left as a failure it was counted in http_req_failed: the ~0.1% error
+      // rate in every Phase 2 baseline was exactly these 50 setup requests.
+      responseCallback: http.expectedStatuses(201, 409),
   });
   if (res.status === 409) {
     res = http.post(`${BASE_URL}/auth/login`, body, {
@@ -96,6 +100,10 @@ export function mintUsers() {
     let res = http.post(`${BASE_URL}/auth/register`, body, {
       headers: JSON_HEADERS,
       tags: { name: "setup:register" },
+      // 409 = already registered by an earlier run, the expected case on reruns.
+      // Left as a failure it was counted in http_req_failed: the ~0.1% error
+      // rate in every Phase 2 baseline was exactly these 50 setup requests.
+      responseCallback: http.expectedStatuses(201, 409),
     });
 
     if (res.status === 409) {

@@ -5,10 +5,14 @@ import { AppModule } from "./../src/app.module";
 import { configureApp } from "./../src/bootstrap";
 import { PrismaService } from "./../src/prisma/prisma.service";
 import { FREE_PLAN_TODO_QUOTA } from "./../src/todo/todo.service";
+import { REDIS } from "./../src/redis/redis.module";
+import { RATE_LIMITS } from "./../src/throttle/throttle.module";
+import type Redis from "ioredis";
 
 // Shared app + token state — rebuilt once per suite for speed.
 let app: INestApplication;
 let prisma: PrismaService;
+let redis: Redis;
 
 // alice's credentials
 const ALICE = { email: "e2e-alice@test.invalid", password: "TestPass123!" };
@@ -40,6 +44,10 @@ beforeAll(async () => {
   await app.init();
 
   prisma = app.get(PrismaService);
+  redis = app.get<Redis>(REDIS);
+
+  // Rate-limit counters persist across runs in Redis; start from zero.
+  await redis.flushdb();
 
   // Wipe e2e users from any prior run, then recreate.
   await prisma.session.deleteMany({
@@ -391,5 +399,30 @@ describe("Todos — tenant isolation", () => {
       .delete(`/api/v1/todos/${aliceTodoId}`)
       .auth(bobToken, { type: "bearer" })
       .expect(404);
+  });
+});
+
+describe("Rate limiting", () => {
+  // 60s window, so flushing first makes the count deterministic. Refresh with
+  // no cookie is the cheapest anonymous request: it 401s without touching
+  // argon2, but still passes through the per-IP throttler first.
+  it("limits anonymous auth requests per IP and returns a standard Retry-After", async () => {
+    await redis.flushdb();
+    const limit = RATE_LIMITS.authPerIpPerMinute;
+
+    for (let i = 0; i < limit; i++) {
+      await request(app.getHttpServer())
+        .post("/api/v1/auth/refresh")
+        .expect(401);
+    }
+
+    const limited = await request(app.getHttpServer())
+      .post("/api/v1/auth/refresh")
+      .expect(429);
+
+    expect(limited.body.code).toBe("RATE_LIMITED");
+    expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
+
+    await redis.flushdb();
   });
 });

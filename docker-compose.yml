@@ -81,6 +81,11 @@ services:
       REDIS_URL: redis://redis:6379
       # Local-only value. Validated at boot: must be >= 32 chars.
       JWT_SECRET: docker-compose-local-dev-secret-32chars
+      # Exactly one proxy (nginx) sits in front of every replica.
+      TRUST_PROXY_HOPS: 1
+      # 1 for rate-limit experiments; raise it (e.g. 1000) to rerun the Phase 2
+      # load scenarios, where 50 synthetic users stand in for thousands.
+      THROTTLE_SCALE: ${THROTTLE_SCALE:-1}
       # Change this to match your frontend origin. Comma-separated for multiple.
       CORS_ORIGINS: http://localhost:5173
     ports:
