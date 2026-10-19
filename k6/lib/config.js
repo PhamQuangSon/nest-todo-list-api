@@ -47,11 +47,16 @@ const SCENARIOS = {
   },
 
   // Normal expected traffic. Open model, ramps to 200 rps.
+  //
+  // preAllocatedVUs comes from Little's Law, it is not a guess: peak rate x
+  // mean iteration duration. 200 rps x ~3s of think time needs ~600 VUs, so
+  // allocating 100 and letting k6 scramble mid-ramp just produces
+  // dropped_iterations — the harness failing, reported as if it were the server.
   load: {
     executor: "ramping-arrival-rate",
     startRate: 10,
     timeUnit: "1s",
-    preAllocatedVUs: 100,
+    preAllocatedVUs: 700,
     maxVUs: 1500,
     stages: [
       { target: 50, duration: "30s" },
@@ -80,11 +85,16 @@ const SCENARIOS = {
   },
 
   // Sudden burst: does it recover, or stay broken after the spike passes?
+  //
+  // 800 rps x ~3s think time is ~2400 VUs, which is a lot of harness for a
+  // 10-second burst. Run it with short think time (THINK_MIN=0.1 THINK_MAX=0.5)
+  // and ~240 VUs is enough — the arrival rate the server sees is identical
+  // either way. The preallocation below assumes the short-think form.
   spike: {
     executor: "ramping-arrival-rate",
     startRate: 20,
     timeUnit: "1s",
-    preAllocatedVUs: 200,
+    preAllocatedVUs: 400,
     maxVUs: 3000,
     stages: [
       { target: 20, duration: "30s" },
