@@ -63,6 +63,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
       );
     }
 
+    // Any 429 that knows its wait time also sends it as the standard header, so
+    // clients do not have to special-case each error body.
+    if (typeof body.retryAfter === "number") {
+      httpAdapter.setHeader(
+        ctx.getResponse(),
+        "Retry-After",
+        String(body.retryAfter),
+      );
+    }
+
     httpAdapter.reply(ctx.getResponse(), body, status);
   }
 

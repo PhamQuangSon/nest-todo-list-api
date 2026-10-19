@@ -7,6 +7,7 @@ import { PrismaService } from "./../src/prisma/prisma.service";
 import { FREE_PLAN_TODO_QUOTA } from "./../src/todo/todo.service";
 import { REDIS } from "./../src/redis/redis.module";
 import { RATE_LIMITS } from "./../src/throttle/throttle.module";
+import { LOGIN_FAILURES_PER_HOUR } from "./../src/auth/login-attempts";
 import type Redis from "ioredis";
 
 // Shared app + token state — rebuilt once per suite for speed.
@@ -424,5 +425,37 @@ describe("Rate limiting", () => {
     expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
 
     await redis.flushdb();
+  });
+
+  it("locks an account after repeated failed logins, even for the right password", async () => {
+    await redis.flushdb();
+
+    for (let i = 0; i < LOGIN_FAILURES_PER_HOUR; i++) {
+      await request(app.getHttpServer())
+        .post("/api/v1/auth/login")
+        .send({ email: ALICE.email, password: "wrong-password" })
+        .expect(401);
+    }
+
+    // The correct password no longer helps: the check runs before argon2, so a
+    // locked account cannot be used to burn password-hashing CPU either.
+    const locked = await request(app.getHttpServer())
+      .post("/api/v1/auth/login")
+      .send(ALICE)
+      .expect(429);
+    expect(locked.body.code).toBe("TOO_MANY_LOGIN_ATTEMPTS");
+    expect(Number(locked.headers["retry-after"])).toBeGreaterThan(0);
+
+    // Other accounts are unaffected.
+    await request(app.getHttpServer())
+      .post("/api/v1/auth/login")
+      .send(BOB)
+      .expect(200);
+
+    await redis.flushdb();
+    await request(app.getHttpServer())
+      .post("/api/v1/auth/login")
+      .send(ALICE)
+      .expect(200);
   });
 });

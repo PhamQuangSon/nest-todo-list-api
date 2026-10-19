@@ -47,6 +47,23 @@ function createClient(): Redis {
   return client;
 }
 
+// With the offline queue off, any command sent before the first connection
+// completes rejects — so the first requests after boot would skip the rate
+// limiter. Wait for ready, but only briefly: Redis being down must not stop
+// the API from starting, it should start degraded.
+async function createReadyClient(): Promise<Redis> {
+  const client = createClient();
+  const ready = new Promise<void>((resolve) => client.once("ready", resolve));
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+  await Promise.race([ready, timeout]);
+  if (client.status !== "ready") {
+    new Logger("Redis").warn(
+      "redis not ready after 2s; starting anyway, degraded until it connects",
+    );
+  }
+  return client;
+}
+
 @Injectable()
 class RedisShutdown implements OnApplicationShutdown {
   constructor(@Inject(REDIS) private readonly redis: Redis) {}
@@ -58,7 +75,7 @@ class RedisShutdown implements OnApplicationShutdown {
 
 @Global()
 @Module({
-  providers: [{ provide: REDIS, useFactory: createClient }, RedisShutdown],
+  providers: [{ provide: REDIS, useFactory: createReadyClient }, RedisShutdown],
   exports: [REDIS],
 })
 export class RedisModule {}

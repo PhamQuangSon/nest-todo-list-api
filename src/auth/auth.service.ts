@@ -9,6 +9,7 @@ import * as argon2 from "argon2";
 import { PrismaService } from "../prisma/prisma.service";
 import { JwtPayload, AuthTokens } from "./auth.types";
 import { Plan } from "@prisma/client";
+import { LoginAttempts } from "./login-attempts";
 
 const REFRESH_TOKEN_BYTES = 48;
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -26,6 +27,7 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
+    private readonly loginAttempts: LoginAttempts,
   ) {}
 
   async register(email: string, password: string): Promise<AuthTokens> {
@@ -49,11 +51,17 @@ export class AuthService {
     email: string,
     password: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
+    await this.loginAttempts.assertNotLocked(email);
+
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user || !(await argon2.verify(user.passwordHash, password))) {
+      // Counted for unknown emails too, so the limiter does not behave
+      // differently for accounts that exist.
+      await this.loginAttempts.recordFailure(email);
       throw new UnauthorizedException({ code: "INVALID_CREDENTIALS" });
     }
 
+    await this.loginAttempts.clear(email);
     return this.issueTokenPair(user.id, user.plan, user.tokenVersion);
   }
 
